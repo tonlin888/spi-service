@@ -1,15 +1,18 @@
 #include "common.h"
 #include "MessageQueue.h"
 #include "Packet.h"
-#include "IPCManager.h"
-#include "SPIManager.h"
+#include "IpcManager.h"
+#include "SpiManager.h"
+#include "SeqMapper.h"
 #include <thread>
 
 int main() {
-    MessageQueue<Packet> msg_queue;
+    MessageQueue<Packet> tx_queue;
+    MessageQueue<Packet> rx_queue;
+    SeqMapper seq_mapper;
 
-    IPCManager ipc(msg_queue);
-    SPIManager spi(msg_queue);
+    IpcManager ipc(tx_queue, rx_queue, seq_mapper);
+    SpiManager spi(tx_queue, rx_queue, seq_mapper);
 
     try {
         ipc.init_socket();
@@ -29,7 +32,7 @@ int main() {
         std::this_thread::sleep_for(std::chrono::seconds(1));
     }
     
-    // 通知 IPCManager / SPIManager 停止
+    // 通知 IpcManager / SpiManager 停止
     ipc.stop(); 
     spi.stop();
 

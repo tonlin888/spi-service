@@ -1,24 +1,38 @@
 #include "common.h"
-#include "SPIManager.h"
+#include "SpiManager.h"
+#include "SpiFrame.h"
 #include <sys/ioctl.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/epoll.h>
+
+#ifdef SIMULATE_GPIO_BEHAVIOR
+#include <sys/inotify.h> // simulate gpio
+#endif
+
 #include <linux/spi/spidev.h>
 #include <poll.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <string>
 
-SPIManager::SPIManager(MessageQueue<Packet>& mq)
+#undef LOG_TAG
+#define LOG_TAG "spi-service/SpiManager"
+
+using Direction = SpiFrame::Direction;
+using Command = SpiFrame::Command;
+
+SpiManager::SpiManager(MessageQueue<Packet>& tx_mq, MessageQueue<Packet>& rx_mq, SeqMapper& seq_mapper)
     : spi_fd_(-1),
       device_(DEFAULT_SPI_DEV),
-      msg_queue_(mq),
+      tx_queue_(tx_mq),
+      rx_queue_(rx_mq),
+      seq_mapper_(seq_mapper),
       epoll_fd_(-1),
       gpio_fd_(-1),
       running_(false)
 {
-    LOGI("SPIManager constructor");
+    LOGI("SpiManager constructor");
     spi_fd_ = open(device_.c_str(), O_RDWR);
     if (spi_fd_ < 0) {
         LOGE("open %s fail: %s", device_.c_str(), strerror(errno));
@@ -39,25 +53,32 @@ SPIManager::SPIManager(MessageQueue<Packet>& mq)
     LOGI("SPI opened: %s", device_.c_str());
     
     // 初始化 GPIO 和 epoll
-    if (!initGpio()) {
-        LOGE("Failed to initialize GPIO, stopping SPIManager");
+    if (!init_gpio()) {
+        LOGE("Failed to initialize GPIO, stopping SpiManager");
         return;
     }
+    
+#ifdef SIMULATE_GPIO_BEHAVIOR
+    if (!init_mock_gpio()) {
+        LOGE("Failed to initialize MOCK GPIO, stopping SpiManager");
+        return;
+    }
+#endif
 }
 
-SPIManager::~SPIManager() {
+SpiManager::~SpiManager() {
     if (spi_fd_ >= 0) {
         close(spi_fd_);
         LOGI("SPI closed: %s", device_.c_str());
     }
 }
 
-void SPIManager::start() {
+void SpiManager::start() {
     running_ = true;
-    spi_thread_ = std::thread(&SPIManager::run, this);
+    spi_thread_ = std::thread(&SpiManager::run, this);
 }
 
-void SPIManager::stop() {
+void SpiManager::stop() {
     running_ = false;
 
     if (gpio_thread_.joinable()) {
@@ -66,54 +87,80 @@ void SPIManager::stop() {
     if (gpio_fd_ >= 0) close(gpio_fd_);
     if (epoll_fd_ >= 0) close(epoll_fd_);
     
-    msg_queue_.stop();
+    tx_queue_.stop();
     if (spi_thread_.joinable()) {
         spi_thread_.join();
     }
 }
 
-void SPIManager::run() {
-    LOGI("[SPI] Manager running...\n");
-    State state = State::IDLE;
-    std::vector<uint8_t> recv_buf(DATA_LENGTH);
+void SpiManager::run() {
+    LOGI("Manager running...\n");
+    std::vector<uint8_t> recv_buf(MAX_PAYLOAD);
     
      while (running_) {
-        auto pkt_opt = msg_queue_.pop();
+        auto pkt_opt = tx_queue_.pop();
         if (!pkt_opt) {
-            LOGE("got std::nullopt from msg_queue_pop(), stop running");
+            LOGE("got std::nullopt from tx_queue_pop()");
             break; // queue 停止
         }
 
-        Packet& pkt = *pkt_opt;
+        Packet& pkt_tx = *pkt_opt;
 
-        switch (pkt.source) {
+        switch (pkt_tx.source) {
             case PacketSource::IPC: {
-                auto& ipc = std::get<IPCData>(pkt.payload);
+                auto& ipc = std::get<IPCData>(pkt_tx.payload);
                 LOGI("Processing IPC packet from fd=%d, len=%zu", ipc.client_fd, ipc.data.size());
 
-                // 分塊寫入 SPI
                 size_t offset = 0;
+                uint16_t seq_id = (ipc.flow == MessageFlow::EXECUTE) ? seq_mapper_.add_mapping(ipc.seq, ipc.client_fd) : seq_id_;
+                Command cmd = (ipc.flow == MessageFlow::EXECUTE) ? Command::READ_UNREL : Command::WRITE_UNREL;
+
                 while (offset < ipc.data.size()) {
-                    size_t chunk = std::min(DATA_LENGTH, ipc.data.size() - offset);
-
-                    // Debug log
-                    const uint8_t* chunk_ptr = ipc.data.data() + offset;
-                    LOGI("Sent to slave: %s", bytesToHexString(chunk_ptr, chunk).c_str());
-
-                    spiTransfer(ipc.data.data() + offset, nullptr, chunk);
-                    offset += chunk;
+                    SpiFrame spi_frame = SpiFrame(Direction::SOC2MCU, seq_id, cmd, ipc.data, offset);
+                    if (!spi_frame.is_valid()) {
+                        LOGI("Invalid frame at offset %zu, data size=%zu", offset, ipc.data.size());
+                        offset = ipc.data.size();
+                        break;
+                    }
+                    std::vector<uint8_t> bytes = spi_frame.toBytes();
+                    LOGI("Send to slave: %s\n", bytesToHexString(bytes).c_str());
+                    spi_transfer(bytes.data(), nullptr, bytes.size());
+                    offset = spi_frame.next_;
                 }
+                seq_id_++;
                 break;
             }
 
             case PacketSource::GPIO: {
-                auto& gpio = std::get<GPIOData>(pkt.payload);
-                LOGI("Processing GPIO packet, level_low=%d", gpio.level_low);
+                auto& gpio = std::get<GPIOData>(pkt_tx.payload);
+                LOGI("Processing GPIO packet, GPIO level=%u", gpio.level);
 
                 // 如果 MCU 拉低電平表示有資料要讀
-                if (gpio.level_low) {
-                    spiTransfer(nullptr, recv_buf.data(), recv_buf.size());
-                    LOGI("Received from slave: %s", bytesToHexString(recv_buf).c_str());
+                if (isSpiReadRequired(gpio.level)) {
+                    // send SERVICE_MCU_REQUEST
+                    SpiFrame spi_frame = SpiFrame(Direction::SOC2MCU, seq_id_, Command::SERVICE_MCU_REQUEST, std::vector<uint8_t>{});
+                    
+                    tx_queue_.push_front(Packet{PacketSource::READ, std::monostate{}});
+                    LOGI("Push READ Packet");
+                }
+                break;
+            }
+            
+            case PacketSource::READ: {
+                LOGI("Processing READ packet");
+                
+                spi_transfer(nullptr, recv_buf.data(), recv_buf.size());
+                LOGI("Received from slave: %s", bytesToHexString(recv_buf).c_str());
+
+#ifdef SIMULATE_GPIO_BEHAVIOR
+                recv_buf = makeTestSpiFrame(seq_id_).toBytes();
+#endif
+                auto spi_frame_opt  = SpiFrame::fromBytes(recv_buf);
+                if (spi_frame_opt) {
+                    auto pkt_up_opt = gen_ipc_packet(*spi_frame_opt);
+                    if (pkt_up_opt) rx_queue_.push(*pkt_up_opt);
+                } else {
+                    LOGE("Failed to generate IPC Packet from SPI frame");
                 }
                 break;
             }
@@ -121,7 +168,7 @@ void SPIManager::run() {
     }
 }
 
-int SPIManager::spiTransfer(const uint8_t* tx_buf, uint8_t* rx_buf, size_t len) {
+int SpiManager::spi_transfer(const uint8_t* tx_buf, uint8_t* rx_buf, size_t len) {
     struct spi_ioc_transfer tr{};
     tr.len = len;
     tr.speed_hz = SPI_SPEED;
@@ -137,7 +184,11 @@ int SPIManager::spiTransfer(const uint8_t* tx_buf, uint8_t* rx_buf, size_t len) 
     return 0;
 }
 
-bool SPIManager::initGpio() {
+bool SpiManager::isSpiReadRequired(uint8_t gpio_level) {
+    return (gpio_level != 1); // GPIO High ==> MCU no data to write
+}
+
+bool SpiManager::init_gpio() {
     // 開啟 GPIO 檔案
     gpio_fd_ = open(GPIO_PATH, O_RDONLY | O_NONBLOCK);
     if (gpio_fd_ < 0) {
@@ -170,39 +221,34 @@ bool SPIManager::initGpio() {
     read(gpio_fd_, dummy, sizeof(dummy));
 
     // 啟動 GPIO 監聽執行緒
-    gpio_thread_ = std::thread(&SPIManager::gpioMonitorThread, this);
+    gpio_thread_ = std::thread(&SpiManager::gpioMonitorThread, this);
 
     return true;
 }
 
 // Use the SOC wakeup PIN as an MCU interrupt to notify the SOC.
 // When the MCU has data transmission needs, pull the PIN low until the transmission is complete, then pull it high.
-bool SPIManager::checkGpioLevelAndNotify(bool &last_level_low) {
+uint8_t SpiManager::check_gpio_level_and_notify(uint8_t &last_level) {
     char value[2];
     lseek(gpio_fd_, 0, SEEK_SET);
     ssize_t bytes_read = read(gpio_fd_, value, 1);
     if (bytes_read <= 0) {
         LOGE("Failed to read GPIO level: %s", strerror(errno));
-        return last_level_low; // 讀取失敗就回傳舊值
+        return last_level; // 讀取失敗就回傳舊值
     }
 
-    bool new_low = (value[0] == '0');
-    if (new_low != last_level_low) {
-        last_level_low = new_low;
-
-        Packet pkt;
-        pkt.source = PacketSource::GPIO;
-        pkt.payload = GPIOData{new_low};
-        msg_queue_.push(pkt);
-
-        LOGI("GPIO level changed to %s", new_low ? "low" : "high");
+    uint8_t new_level = (value[0] - 0x30);
+    if (new_level != last_level) {
+        last_level = new_level;
+        tx_queue_.push_front(Packet{PacketSource::GPIO, GPIOData{new_level}});
+        LOGI("Push GPIO Packet, GPIO level=%u", new_level);
     }
-    return last_level_low;
+    return last_level;
 }
 
-void SPIManager::gpioMonitorThread() {
+void SpiManager::gpioMonitorThread() {
     struct epoll_event events[1];
-    bool level_low = false; // 紀錄上一次電平狀態
+    uint8_t level = 1; // 紀錄上一次電平狀態, default high
 
     while (running_) {
         int nfds = epoll_wait(epoll_fd_, events, 1, 100);
@@ -215,18 +261,166 @@ void SPIManager::gpioMonitorThread() {
 
         if (nfds == 1 && (events[0].events & (EPOLLPRI | EPOLLERR))) {
             // 第一次先檢查並送事件
-            checkGpioLevelAndNotify(level_low);
+            check_gpio_level_and_notify(level);
 
             // -------- Loop Polling 檢查電平變化 --------
             const int max_poll_ms = 500;
             for (int elapsed = 0; elapsed < max_poll_ms && running_; elapsed += 10) {
                 usleep(10 * 1000);
-                bool now_low = checkGpioLevelAndNotify(level_low);
+                uint8_t now_level = check_gpio_level_and_notify(level);
 
                 // 如果回到 High，可以提前結束
-                if (!now_low) break;
+                if (now_level == 1) break;
             }
         }
     }
 }
 
+std::optional<Packet> SpiManager::gen_ipc_packet(const SpiFrame& spi_frame) {
+    Packet pkt_rx;
+    pkt_rx.source = PacketSource::IPC;
+
+    if (spi_frame.cmd_id_ == Command::WRITE_UNREL || spi_frame.cmd_id_ == Command::READ_UNREL) {
+        LOGI("Command::WRITE_UNREL || spi_frame.cmd_id_ == Command::READ_UNREL");
+        pkt_rx.payload = IPCData{-1, MessageFlow::NOTIFY, spi_frame.seq_id_, spi_frame.payload_}; // client fd -1 means broadcast
+        return pkt_rx;
+    } else if (spi_frame.cmd_id_ == Command::RESPONSE) {
+        LOGI("Command::RESPONSE");
+        SeqMapper::Entry entry;
+        seq_mapper_.find_mapping(spi_frame.seq_id_, entry);
+        
+        if (entry.client_fd < 0) { // 找不到對應 client_fd
+            LOGE("no (client fd, IPC's SEQ_ID) map to this SPI's SEQ_ID(%d)", spi_frame.seq_id_);
+            return std::nullopt;
+        } else {
+            seq_mapper_.remove_mapping(spi_frame.seq_id_);
+        }
+
+        pkt_rx.payload = IPCData{entry.client_fd, MessageFlow::RESPONSE, entry.ipc_seq, spi_frame.payload_};
+        return pkt_rx;
+    } 
+    else {
+        LOGE("Unknown spi_frame.cmd_id_ = %d", spi_frame.cmd_id_);
+        return std::nullopt;
+    }
+}
+
+#ifdef SIMULATE_GPIO_BEHAVIOR
+bool SpiManager::init_mock_gpio() {
+    // 建立檔案確保存在
+    int fd = open(MOCK_GPIO_PATH, O_CREAT | O_RDWR, 0644);
+    if (fd < 0) {
+        LOGE("Failed to create mock gpio file: %s", strerror(errno));
+        return false;
+    }
+    close(fd);
+
+    inotify_fd_ = inotify_init();
+    if (inotify_fd_ < 0) {
+        LOGE("Failed to init inotify: %s", strerror(errno));
+        return false;
+    }
+
+    watch_fd_ = inotify_add_watch(inotify_fd_, MOCK_GPIO_PATH, IN_MODIFY);
+    if (watch_fd_ < 0) {
+        LOGE("Failed to add watch: %s", strerror(errno));
+        close(inotify_fd_);
+        return false;
+    }
+
+    // 開啟 mock 檔案 (代替 gpio_fd_)
+    gpio_fd2_ = open(MOCK_GPIO_PATH, O_RDONLY);
+    if (gpio_fd2_ < 0) {
+        LOGE("Failed to open mock gpio file: %s", strerror(errno));
+        return false;
+    }
+
+    // 啟動監控執行緒
+    gpio_thread2_ = std::thread(&SpiManager::mockGpioThread, this);
+    return true;
+}
+
+uint8_t SpiManager::check_mock_gpio_level_and_notify(uint8_t &last_level) {
+    char value[2];
+    lseek(gpio_fd2_, 0, SEEK_SET);
+    ssize_t bytes_read = read(gpio_fd2_, value, 1);
+    if (bytes_read <= 0) {
+        LOGE("Failed to read MOCK GPIO level: %s", strerror(errno));
+        return last_level; // 讀取失敗就回傳舊值
+    }
+
+    uint8_t new_level = (value[0] - 0x30);
+    if (new_level != last_level) {
+        last_level = new_level;
+
+        Packet pkt;
+        pkt.source = PacketSource::GPIO;
+        pkt.payload = GPIOData{new_level};
+        tx_queue_.push(pkt);
+
+        LOGI("MOCK GPIO level changed to %u", new_level);
+    } else {
+        LOGI("MOCK GPIO level no changed, %u", last_level);
+    }
+    return last_level;
+}
+
+void SpiManager::mockGpioThread() {
+    char buf[1024];
+    uint8_t level = 1; // default high
+
+    while (running_) {
+        int len = read(inotify_fd_, buf, sizeof(buf));
+        LOGI("mockGpioThread, len=%d", len);
+        if (len <= 0) {
+            usleep(100 * 1000); // 0.1s
+            continue;
+        }
+
+        // 檔案有修改 → 檢查電平並送事件
+        check_mock_gpio_level_and_notify(level);
+    }
+}
+
+SpiFrame SpiManager::makeTestSpiFrame(uint16_t seq_id) {
+    char value[2];
+    std::vector<uint8_t> payload;
+    Command cmd = Command::WRITE_UNREL;
+
+    lseek(gpio_fd2_, 0, SEEK_SET);
+    ssize_t bytes_read = read(gpio_fd2_, value, 1);
+    
+    uint8_t gpio_level = 0;
+    if (bytes_read <= 0) {
+        LOGE("makeTestSpiFrame, Failed to read MOCK GPIO level: %s", strerror(errno));
+    } else {
+        gpio_level = (value[0] - 0x30);
+    }
+
+    // sub cmd(2) + data
+    switch (gpio_level) {
+        case 0:
+            // MCU write to SoC
+            cmd = Command::WRITE_UNREL;
+            payload = {0x04, 0x00, 0x12, 0x13};
+            break;
+        case 1:
+            // GPIO High ==> MCU no data to write
+            break;
+        case 2:
+            // MCU response to SOC
+            cmd = Command::RESPONSE;
+            payload = {0x06, 0x00, 0xEF, 0xEE, 0xED};
+            break;
+        default:
+            payload = {0x02, 0x00, 0x11, 0x12, 0x13};
+            break;
+    }
+
+    SpiFrame frame(Direction::MCU2SOC, seq_id, cmd, payload);
+
+    LOGI("makeTestSpiFrame: %s", frame.toString().c_str());
+
+    return frame;
+}
+#endif // SIMULATE_GPIO_BEHAVIOR

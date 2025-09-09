@@ -1,5 +1,8 @@
+#include "IpcManager.h"
 #include "common.h"
-#include "IPCManager.h"
+#include "ClientMessage.h"
+#include "SpiCommon.h"
+
 #include <sys/epoll.h>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -7,12 +10,15 @@
 #include <unistd.h>
 #include <cstring>
 #include <iostream>
+#include <string_view>
 
-#define MAX_EVENTS 10
-#define BUF_SIZE 512
+#undef LOG_TAG
+#define LOG_TAG "spi-service/IpcManager"
 
+using Command = SpiCommon::Command;
+using ErrorCode = SpiCommon::ErrorCode;
 
-void IPCManager::ensureDirExistsAndClean() {
+void IpcManager::init_directory() {
     // 1. 找出目錄部分
     std::string dir = socket_path_;
     size_t pos = dir.find_last_of('/');
@@ -21,7 +27,7 @@ void IPCManager::ensureDirExistsAndClean() {
     } else {
         dir = ".";
     }
-    LOGI("[IPC] ensureDirExistsAndClean, dir: %s", dir.c_str());
+    LOGI("init_directory, dir: %s", dir.c_str());
 
     // 2. 建立目錄 (支援多層)
     size_t p = 0;
@@ -35,16 +41,16 @@ void IPCManager::ensureDirExistsAndClean() {
 
     // 3. 刪除舊的 socket file
     if (unlink(socket_path_.c_str()) < 0 && errno != ENOENT) {
-        LOGE("[IPC] unlink failed: %s", strerror(errno));
+        LOGE("unlink failed: %s", strerror(errno));
     }
 }
 
-void IPCManager::init_socket() {
-    ensureDirExistsAndClean();
+void IpcManager::init_socket() {
+    init_directory();
 
     listen_fd_ = socket(AF_UNIX, SOCK_STREAM, 0);
     if (listen_fd_ < 0) {
-        LOGE("[IPC] socket failed: %s", strerror(errno));
+        LOGE("socket failed: %s", strerror(errno));
         throw std::runtime_error("Failed to create socket");
     }
 
@@ -54,17 +60,17 @@ void IPCManager::init_socket() {
     unlink(socket_path_.c_str());
 
     if (bind(listen_fd_, (sockaddr*)&addr, sizeof(addr)) < 0) {
-        LOGE("[IPC] bind failed on fd=%d: %s %s", listen_fd_, strerror(errno), socket_path_.c_str());
+        LOGE("bind failed on fd=%d: %s %s", listen_fd_, strerror(errno), socket_path_.c_str());
         throw std::runtime_error("Failed to bind socket");
     }
     if (listen(listen_fd_, 5) < 0) {
-        LOGE("[IPC] listen failed on fd=%d: %s", listen_fd_, strerror(errno));
+        LOGE("listen failed on fd=%d: %s", listen_fd_, strerror(errno));
         throw std::runtime_error("Failed to listen on socket");
     }
 
     epoll_fd_ = epoll_create1(0);
     if (epoll_fd_ < 0) {
-       LOGE("[IPC] epoll_create1 failed: %s", strerror(errno));
+       LOGE("epoll_create1 failed: %s", strerror(errno));
        throw std::runtime_error("Failed to create epoll instance");
     }
 
@@ -73,13 +79,13 @@ void IPCManager::init_socket() {
     ev.data.fd = listen_fd_;
     epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, listen_fd_, &ev);
 
-    LOGI("[IPC] Listening on %s\n", socket_path_.c_str());
+    LOGI("Listening on %s\n", socket_path_.c_str());
 }
     
-void IPCManager::accept_client() {
+void IpcManager::accept_client() {
     int client_fd = accept(listen_fd_, nullptr, nullptr);
     if (client_fd < 0) {
-        LOGE("[IPC] accept failedclient_fd=%d: %s", client_fd, strerror(errno));
+        LOGE("accept failed, client_fd=%d: %s", client_fd, strerror(errno));
         return;
     }
 
@@ -87,51 +93,151 @@ void IPCManager::accept_client() {
     ev.events = EPOLLIN;
     ev.data.fd = client_fd;
     epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, client_fd, &ev);
-    LOGI("[IPC] Client connected fd=%d", client_fd);
+    LOGI("Client connected fd=%d", client_fd);
 }
 
-void IPCManager::handle_client(int client_fd) {
-    uint8_t buf[BUF_SIZE];
+void IpcManager::process_cmd(int client_fd, const ClientMessage& msg) {
+    Packet pkt;
+    switch (static_cast<uint8_t>(msg.cmd_)) {
+        case static_cast<uint8_t>(Command::REGISTER_REQ):
+            LOGI("process_cmd, REGISTER_REQ");
+            
+            unsubscribe_client(client_fd);
+            for (uint8_t r : msg.data_) {
+                register_cmd(client_fd, r);
+            }
+            send_response(client_fd, ClientMessage(msg.seq_, Command::RESPONSE, ErrorCode::NONE));
+            break;
+            
+        case static_cast<uint8_t>(Command::UNREGISTER_REQ):
+            LOGI("process_cmd, UNREGISTER_REQ");
+            for (uint8_t r : msg.data_) {
+                unregister_cmd(client_fd, r);
+            }
+            send_response(client_fd, ClientMessage(msg.seq_, Command::RESPONSE, ErrorCode::NONE));
+            break;     
+            
+        case static_cast<uint8_t>(Command::EXECUTE_REQ):
+            LOGI("process_cmd, EXECUTE_REQ");
+            LOGI("Push IPC Packet, size=%u", msg.data_.size());
+            tx_queue_.push(Packet{PacketSource::IPC, IPCData{client_fd, MessageFlow::EXECUTE, msg.seq_, msg.data_}});
+            break; 
+
+        case static_cast<uint8_t>(Command::SET_REQ):
+            LOGI("process_cmd, SET_REQ");
+            LOGI("Push IPC Packet, size=%u", msg.data_.size());
+            tx_queue_.push(Packet{PacketSource::IPC, IPCData{client_fd, MessageFlow::SET, seq_, msg.data_}});
+            break; 
+
+        default:
+            LOGE("process_cmd, unknow command");
+    }
+}
+    
+void IpcManager::process_message(int client_fd, const uint8_t* buf, size_t n) {
+    auto msg_opt = ClientMessage::fromBytes(buf, static_cast<size_t>(n));
+    if (!msg_opt) {
+        LOGW("Invalid ClientMessage received");
+        send_response(client_fd, ClientMessage(0, Command::RESPONSE, ErrorCode::INVALID_FORMAT));
+        return;
+    }
+    
+    ClientMessage& msg = *msg_opt;
+    LOGI("Got msg: %s\n", msg.toString().c_str());
+
+    if (msg.data_.size() > SpiCommon::MAX_IPC_DATA_SIZE) {
+        // 回錯誤給 client
+        send_response(client_fd, ClientMessage(msg.seq_, Command::RESPONSE, ErrorCode::DATA_TOO_LONG));
+        LOGW("Received %zd bytes from fd=%d, exceed MAX_IPC_DATA_SIZE=%d, dropped", 
+             msg.data_.size(), client_fd, SpiCommon::MAX_IPC_DATA_SIZE);
+        return;
+    }
+    
+    process_cmd(client_fd, msg);
+}
+
+void IpcManager::handle_client(int client_fd) {
+    uint8_t buf[SpiCommon::MAX_IPC_PACKET_SIZE];
     ssize_t n = recv(client_fd, buf, sizeof(buf), 0);
+    LOGI("Received %d, bytes from fd=%d: %s", n, client_fd, bytesToHexString(buf, n, 20).c_str());
+ 
     if (n > 0) {
-        Packet pkt;
-        pkt.source = PacketSource::IPC;
-        pkt.payload = IPCData{client_fd, std::vector<uint8_t>(buf, buf + n)};
-        msg_queue_.push(pkt);
-        LOGI("[IPC] Received %d, bytes from fd=%d", n, client_fd);
+        process_message(client_fd, buf, n);
     } else if (n == 0) {
-        LOGI("[IPC] Client closed connection, fd=%d", client_fd);
+        LOGI("Client closed connection, fd=%d", client_fd);
         remove_client(client_fd);
     } else {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            LOGE("[IPC] recv() failed on fd=%d: no data temporarily (EAGAIN || EWOULDBLOCK)", client_fd);
+            LOGE("recv() failed on fd=%d: no data temporarily (EAGAIN || EWOULDBLOCK)", client_fd);
         } else if (errno == EINTR) {
-            LOGE("[IPC] recv() failed on fd=%d: interrupt (EINTR)", client_fd);
+            LOGE("recv() failed on fd=%d: interrupt (EINTR)", client_fd);
         } else {
-            LOGE("[IPC] recv() failed on fd=%d: %s", client_fd, strerror(errno));
+            LOGE("recv() failed on fd=%d: %s", client_fd, strerror(errno));
             remove_client(client_fd);
         }
     }
 }
 
-void IPCManager::remove_client(int client_fd) {
+void IpcManager::remove_client(int client_fd) {
     epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, client_fd, nullptr);
     close(client_fd);
-    LOGI("[IPC] Client disconnected fd=%d", client_fd);
+    
+    seq_mapper_.remove_client(client_fd);
+    unsubscribe_client(client_fd);
+    LOGI("Client disconnected fd=%d", client_fd);
 }
 
-void IPCManager::start() {
+// 回覆 client 的 function
+void IpcManager::send_response(int client_fd, const ClientMessage& msg) {
+    std::vector<uint8_t> buf = msg.toBytes();
+
+    ssize_t sent = send(client_fd, buf.data(), buf.size(), 0);
+    if (sent < 0) {
+        LOGE("send_response failed: %s", strerror(errno));
+    } else {
+        LOGI("send_response ok: fd=%d, %zu bytes, %s", client_fd, buf.size(), msg.toString().c_str());
+    }
+}
+
+void IpcManager::unsubscribe_client(int client_fd) {
+    for (auto it = cmd_map_.begin(); it != cmd_map_.end(); ) {
+        it->second.erase(client_fd);
+        if (it->second.empty()) {
+            it = cmd_map_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+void IpcManager::register_cmd(int client_fd, uint16_t cmd_id) {
+    cmd_map_[cmd_id].insert(client_fd);
+}
+
+void IpcManager::unregister_cmd(int client_fd, uint16_t cmd_id) {
+    if (cmd_map_.count(cmd_id)) {
+        cmd_map_[cmd_id].erase(client_fd);
+        if (cmd_map_[cmd_id].empty()) {
+            cmd_map_.erase(cmd_id);
+        }
+    }
+}
+
+void IpcManager::start() {
     running_ = true;
-    ipc_thread_ = std::thread(&IPCManager::run, this);
+    ipc_tx_thread_ = std::thread(&IpcManager::tx_run, this);
+    ipc_rx_thread_ = std::thread(&IpcManager::rx_run, this);
 }
 
-void IPCManager::stop() {
+void IpcManager::stop() {
     running_ = false;
-    if (ipc_thread_.joinable())
-        ipc_thread_.join();
+    if (ipc_tx_thread_.joinable())
+        ipc_tx_thread_.join();
+    if (ipc_rx_thread_.joinable())
+        ipc_rx_thread_.join();
 }
 
-void IPCManager::run() {
+void IpcManager::tx_run() {
     epoll_event events[MAX_EVENTS];
 
     while (running_) {
@@ -145,5 +251,65 @@ void IPCManager::run() {
                 handle_client(events[i].data.fd);
             }
         }
+    }
+}
+
+void IpcManager::rx_run() {
+    while (running_) {
+        auto pkt_opt = rx_queue_.pop();
+        if (!pkt_opt) {
+            LOGE("got std::nullopt from rx_queue_pop(), stop running");
+            break; // queue 停止
+        }
+
+        Packet& pkt = *pkt_opt;
+        if (PacketSource::IPC == pkt.source) {
+            auto& ipc = std::get<IPCData>(pkt.payload);
+            LOGI("Processing IPC packet len=%zu, %s", ipc.data.size(), bytesToHexString(ipc.data).c_str());
+
+            send_ipc_to_clients(ipc);
+         } else {
+             LOGW("skip pkt.source = %u", static_cast<uint8_t>(pkt.source));
+         }
+    }
+}
+
+void IpcManager::send_ipc_to_clients(const IPCData& ipc) {
+    
+    uint16_t cmd_id;
+    if (ipc.data.size() >= 2) {
+        cmd_id = static_cast<uint16_t>(ipc.data[0]) | (static_cast<uint16_t>(ipc.data[1]) << 8);
+        LOGI("send_ipc_to_clients, cmd_id=0x%04X", cmd_id);
+    } else {
+        LOGW("send_ipc_to_clients, ipc.data has less than 2 bytes");
+        return;
+    }
+            
+    if (ipc.flow == MessageFlow::NOTIFY) {
+        auto it = cmd_map_.find(cmd_id);
+        if (it == cmd_map_.end()) {
+            LOGW("No clients registered for cmd_id=0x%04X", cmd_id);
+            return;
+        }
+
+        std::vector<uint8_t> msg = ClientMessage(seq_, Command::NOTIFY, ErrorCode::NONE, ipc.data).toBytes();
+        for (int fd : it->second) {
+            ssize_t n = send(fd, msg.data(), msg.size(), 0);
+            if (n < 0) {
+                LOGE("Failed to send to client fd=%d: %s", fd, strerror(errno));
+            } else {
+                LOGI("Sent %zd bytes to client fd=%d for cmd_id=0x%04X, %s", n, fd, cmd_id, bytesToHexString(msg).c_str());
+            }
+        }
+    } else if (ipc.flow == MessageFlow::RESPONSE) {
+        std::vector<uint8_t> msg = ClientMessage(ipc.seq, Command::RESPONSE, ErrorCode::NONE, ipc.data).toBytes();
+        ssize_t n = send(ipc.client_fd, msg.data(), msg.size(), 0);
+        if (n < 0) {
+            LOGE("Failed to send to client fd=%d: %s", ipc.client_fd, strerror(errno));
+        } else {
+            LOGI("Sent %zd bytes to client fd=%d for cmd_id=0x%04X, %s", n, ipc.client_fd, cmd_id, bytesToHexString(msg).c_str());
+        }
+    } else {
+        LOGE("Unknown message flow %d", ipc.flow);
     }
 }
