@@ -296,7 +296,7 @@ std::optional<Packet> SpiManager::gen_ipc_packet(const SpiFrame& spi_frame) {
             seq_mapper_.remove_mapping(spi_frame.seq_id_);
         }
 
-        pkt_rx.payload = IPCData{entry.client_fd, MessageFlow::RESPONSE, entry.ipc_seq, spi_frame.payload_};
+        pkt_rx.payload = IPCData{entry.client_fd, MessageFlow::RESPONSE, entry.seq, spi_frame.payload_};
         return pkt_rx;
     }
     else {

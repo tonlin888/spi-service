@@ -70,6 +70,7 @@ namespace SpiCommon {
         SUB_CMD_GET_LED_STATUS,
         SUB_CMD_SET_LED,
         // NOTE: Add other sub-command IDs here in the future
+        SUB_CMD_INVALID = UINT16_MAX,
     };
 }
 // ========== Sample Code ==========
