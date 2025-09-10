@@ -10,11 +10,11 @@ enum class PacketSource : uint8_t {
 
 enum class MessageFlow : uint8_t {
     NONE,
-    
+
     // IPC --> SPI
     EXECUTE = 0x10,  // expects a response from MCU
     SET = 0x11,      // no response required
-    
+
     // IPC <-- SPI
     NOTIFY = 0x20,   // deliver to all registered clients
     RESPONSE  = 0x21 // deliver only to the client that issued EXECUTE_REQ

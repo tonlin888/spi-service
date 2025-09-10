@@ -15,11 +15,11 @@
 #undef LOG_TAG
 #define LOG_TAG "spi-service/IpcManager"
 
-using Command = SpiCommon::Command;
+using MsgType = SpiCommon::MsgType;
 using ErrorCode = SpiCommon::ErrorCode;
 
 void IpcManager::init_directory() {
-    // 1. 找出目錄部分
+    // 1. Extract directory part from socket path
     std::string dir = socket_path_;
     size_t pos = dir.find_last_of('/');
     if (pos != std::string::npos) {
@@ -29,17 +29,17 @@ void IpcManager::init_directory() {
     }
     LOGI("init_directory, dir: %s", dir.c_str());
 
-    // 2. 建立目錄 (支援多層)
+    // 2. Create directory (support multi-level paths)
     size_t p = 0;
     while ((p = dir.find('/', p + 1)) != std::string::npos) {
         std::string subdir = dir.substr(0, p);
         if (!subdir.empty()) {
-            mkdir(subdir.c_str(), 0777); // 已存在會回 -1, 忽略 EEXIST
+            mkdir(subdir.c_str(), 0777); // ignore EEXIST if already exists
         }
     }
-    mkdir(dir.c_str(), 0777); // 最後一層
+    mkdir(dir.c_str(), 0777); // last level
 
-    // 3. 刪除舊的 socket file
+    // 3. Remove old socket file if exists
     if (unlink(socket_path_.c_str()) < 0 && errno != ENOENT) {
         LOGE("unlink failed: %s", strerror(errno));
     }
@@ -81,7 +81,7 @@ void IpcManager::init_socket() {
 
     LOGI("Listening on %s\n", socket_path_.c_str());
 }
-    
+
 void IpcManager::accept_client() {
     int client_fd = accept(listen_fd_, nullptr, nullptr);
     if (client_fd < 0) {
@@ -98,61 +98,61 @@ void IpcManager::accept_client() {
 
 void IpcManager::process_cmd(int client_fd, const ClientMessage& msg) {
     Packet pkt;
-    switch (static_cast<uint8_t>(msg.cmd_)) {
-        case static_cast<uint8_t>(Command::REGISTER_REQ):
+    switch (static_cast<uint8_t>(msg.msg_t_)) {
+        case static_cast<uint8_t>(MsgType::REGISTER_REQ):
             LOGI("process_cmd, REGISTER_REQ");
-            
+
             unsubscribe_client(client_fd);
             for (uint8_t r : msg.data_) {
                 register_cmd(client_fd, r);
             }
-            send_response(client_fd, ClientMessage(msg.seq_, Command::RESPONSE, ErrorCode::NONE));
+            send_response(client_fd, ClientMessage(msg.seq_, MsgType::RESPONSE, ErrorCode::NONE));
             break;
-            
-        case static_cast<uint8_t>(Command::UNREGISTER_REQ):
+
+        case static_cast<uint8_t>(MsgType::UNREGISTER_REQ):
             LOGI("process_cmd, UNREGISTER_REQ");
             for (uint8_t r : msg.data_) {
                 unregister_cmd(client_fd, r);
             }
-            send_response(client_fd, ClientMessage(msg.seq_, Command::RESPONSE, ErrorCode::NONE));
-            break;     
-            
-        case static_cast<uint8_t>(Command::EXECUTE_REQ):
+            send_response(client_fd, ClientMessage(msg.seq_, MsgType::RESPONSE, ErrorCode::NONE));
+            break;
+
+        case static_cast<uint8_t>(MsgType::EXECUTE_REQ):
             LOGI("process_cmd, EXECUTE_REQ");
             LOGI("Push IPC Packet, size=%u", msg.data_.size());
             tx_queue_.push(Packet{PacketSource::IPC, IPCData{client_fd, MessageFlow::EXECUTE, msg.seq_, msg.data_}});
-            break; 
+            break;
 
-        case static_cast<uint8_t>(Command::SET_REQ):
+        case static_cast<uint8_t>(MsgType::SET_REQ):
             LOGI("process_cmd, SET_REQ");
             LOGI("Push IPC Packet, size=%u", msg.data_.size());
             tx_queue_.push(Packet{PacketSource::IPC, IPCData{client_fd, MessageFlow::SET, seq_, msg.data_}});
-            break; 
+            break;
 
         default:
-            LOGE("process_cmd, unknow command");
+            LOGE("process_cmd, unknown command");
     }
 }
-    
+
 void IpcManager::process_message(int client_fd, const uint8_t* buf, size_t n) {
     auto msg_opt = ClientMessage::fromBytes(buf, static_cast<size_t>(n));
     if (!msg_opt) {
         LOGW("Invalid ClientMessage received");
-        send_response(client_fd, ClientMessage(0, Command::RESPONSE, ErrorCode::INVALID_FORMAT));
+        send_response(client_fd, ClientMessage(0, MsgType::RESPONSE, ErrorCode::INVALID_FORMAT));
         return;
     }
-    
+
     ClientMessage& msg = *msg_opt;
     LOGI("Got msg: %s\n", msg.toString().c_str());
 
     if (msg.data_.size() > SpiCommon::MAX_IPC_DATA_SIZE) {
-        // 回錯誤給 client
-        send_response(client_fd, ClientMessage(msg.seq_, Command::RESPONSE, ErrorCode::DATA_TOO_LONG));
-        LOGW("Received %zd bytes from fd=%d, exceed MAX_IPC_DATA_SIZE=%d, dropped", 
+        // Send error back to client if data size exceeds limit
+        send_response(client_fd, ClientMessage(msg.seq_, MsgType::RESPONSE, ErrorCode::DATA_TOO_LONG));
+        LOGW("Received %zd bytes from fd=%d, exceed MAX_IPC_DATA_SIZE=%d, dropped",
              msg.data_.size(), client_fd, SpiCommon::MAX_IPC_DATA_SIZE);
         return;
     }
-    
+
     process_cmd(client_fd, msg);
 }
 
@@ -160,7 +160,7 @@ void IpcManager::handle_client(int client_fd) {
     uint8_t buf[SpiCommon::MAX_IPC_PACKET_SIZE];
     ssize_t n = recv(client_fd, buf, sizeof(buf), 0);
     LOGI("Received %d, bytes from fd=%d: %s", n, client_fd, bytesToHexString(buf, n, 20).c_str());
- 
+
     if (n > 0) {
         process_message(client_fd, buf, n);
     } else if (n == 0) {
@@ -181,13 +181,13 @@ void IpcManager::handle_client(int client_fd) {
 void IpcManager::remove_client(int client_fd) {
     epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, client_fd, nullptr);
     close(client_fd);
-    
+
     seq_mapper_.remove_client(client_fd);
     unsubscribe_client(client_fd);
     LOGI("Client disconnected fd=%d", client_fd);
 }
 
-// 回覆 client 的 function
+// Function to send response back to client
 void IpcManager::send_response(int client_fd, const ClientMessage& msg) {
     std::vector<uint8_t> buf = msg.toBytes();
 
@@ -259,7 +259,7 @@ void IpcManager::rx_run() {
         auto pkt_opt = rx_queue_.pop();
         if (!pkt_opt) {
             LOGE("got std::nullopt from rx_queue_pop(), stop running");
-            break; // queue 停止
+            break; // queue stopped
         }
 
         Packet& pkt = *pkt_opt;
@@ -275,7 +275,7 @@ void IpcManager::rx_run() {
 }
 
 void IpcManager::send_ipc_to_clients(const IPCData& ipc) {
-    
+
     uint16_t cmd_id;
     if (ipc.data.size() >= 2) {
         cmd_id = static_cast<uint16_t>(ipc.data[0]) | (static_cast<uint16_t>(ipc.data[1]) << 8);
@@ -284,7 +284,7 @@ void IpcManager::send_ipc_to_clients(const IPCData& ipc) {
         LOGW("send_ipc_to_clients, ipc.data has less than 2 bytes");
         return;
     }
-            
+
     if (ipc.flow == MessageFlow::NOTIFY) {
         auto it = cmd_map_.find(cmd_id);
         if (it == cmd_map_.end()) {
@@ -292,7 +292,7 @@ void IpcManager::send_ipc_to_clients(const IPCData& ipc) {
             return;
         }
 
-        std::vector<uint8_t> msg = ClientMessage(seq_, Command::NOTIFY, ErrorCode::NONE, ipc.data).toBytes();
+        std::vector<uint8_t> msg = ClientMessage(seq_, MsgType::NOTIFY, ErrorCode::NONE, ipc.data).toBytes();
         for (int fd : it->second) {
             ssize_t n = send(fd, msg.data(), msg.size(), 0);
             if (n < 0) {
@@ -302,7 +302,7 @@ void IpcManager::send_ipc_to_clients(const IPCData& ipc) {
             }
         }
     } else if (ipc.flow == MessageFlow::RESPONSE) {
-        std::vector<uint8_t> msg = ClientMessage(ipc.seq, Command::RESPONSE, ErrorCode::NONE, ipc.data).toBytes();
+        std::vector<uint8_t> msg = ClientMessage(ipc.seq, MsgType::RESPONSE, ErrorCode::NONE, ipc.data).toBytes();
         ssize_t n = send(ipc.client_fd, msg.data(), msg.size(), 0);
         if (n < 0) {
             LOGE("Failed to send to client fd=%d: %s", ipc.client_fd, strerror(errno));

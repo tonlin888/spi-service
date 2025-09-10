@@ -7,7 +7,7 @@
 template <typename T>
 class MessageQueue {
 public:
-    // push 到最後 (一般優先度)
+    // Push message to the back (normal priority)
     void push(const T& msg) {
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -16,7 +16,7 @@ public:
         cond_.notify_one();
     }
 
-    // push 到最前面 (高優先度)
+    // Push message to the front (high priority)
     void push_front(const T& msg) {
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -25,13 +25,13 @@ public:
         cond_.notify_one();
     }
 
-    // 阻塞 pop (等待有資料或 stop)
+    // Blocking pop (wait until there is data or the queue is stopped)
     std::optional<T> pop() {
         std::unique_lock<std::mutex> lock(mutex_);
         cond_.wait(lock, [this]{ return stopped_ || !queue_.empty(); });
 
         if (stopped_ && queue_.empty()) {
-            return std::nullopt;  // queue 已停
+            return std::nullopt;  // Queue has been stopped
         }
 
         T val = queue_.front();
@@ -39,7 +39,7 @@ public:
         return val;
     }
 
-    // 非阻塞 pop
+    // Non-blocking pop
     std::optional<T> try_pop() {
         std::lock_guard<std::mutex> lock(mutex_);
         if (queue_.empty()) {
@@ -50,6 +50,7 @@ public:
         return val;
     }
 
+    // Stop the queue and notify all waiting threads
     void stop() {
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -58,6 +59,7 @@ public:
         cond_.notify_all();
     }
 
+    // Check if the queue is empty
     bool empty() {
         std::lock_guard<std::mutex> lock(mutex_);
         return queue_.empty();

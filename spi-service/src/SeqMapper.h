@@ -16,19 +16,19 @@ public:
     struct Entry {
         uint16_t ipc_seq;
         int client_fd;
-        uint64_t order; // 插入順序
+        uint64_t order; // Insertion order
     };
 
     SeqMapper()
         : next_spi_seq_(1), next_order_(1) {}
 
-    // 新增 mapping，spi_seq 自動遞增，最多保留 10 筆，超過刪掉最舊的
+    // Add a mapping. SPI_SEQ auto-increments. Keep at most MAX_ENTRIES entries, remove the oldest if exceeded.
     uint16_t add_mapping(uint16_t ipc_seq, int client_fd) {
         std::lock_guard<std::mutex> lock(mu_);
         uint16_t spi_seq = next_spi_seq_++;
-        if (next_spi_seq_ == 0) next_spi_seq_ = 1; // 避免 spi_seq = 0
+        if (next_spi_seq_ == 0) next_spi_seq_ = 1; // avoid spi_seq = 0
 
-        // 超過上限，刪掉最舊的
+        // Remove the oldest if exceeding MAX_ENTRIES
         if (spi_to_entry_.size() >= MAX_ENTRIES) {
             auto it = std::min_element(
                 spi_to_entry_.begin(), spi_to_entry_.end(),
@@ -44,13 +44,13 @@ public:
         return spi_seq;
     }
 
-    // 查詢, if 找不到 ==> client_fd = -1
+    // Find mapping. If not found, client_fd = -1
     void find_mapping(uint16_t spi_seq, Entry &out_entry) {
         std::lock_guard<std::mutex> lock(mu_);
         auto it = spi_to_entry_.find(spi_seq);
-        
+
         if (it == spi_to_entry_.end()) {
-            // 找不到，給預設值
+            // Not found, return default values
             out_entry.client_fd = -1;
             out_entry.ipc_seq = 0;
             out_entry.order = 0;
@@ -61,18 +61,18 @@ public:
         }
     }
 
-    // 刪除單一 spi_seq
+    // Remove a single mapping by SPI_SEQ
     bool remove_mapping(uint16_t spi_seq) {
         std::lock_guard<std::mutex> lock(mu_);
         LOGI("remove_mapping, spi_seq=%u", spi_seq);
         return spi_to_entry_.erase(spi_seq) > 0;
     }
 
-    // 刪除某個 client_fd 的所有 mapping
+    // Remove all mappings for a specific client_fd
     std::vector<uint16_t> remove_client(int client_fd) {
         std::lock_guard<std::mutex> lock(mu_);
         LOGI("remove_client, client_fd=%d", client_fd);
-        
+
         std::vector<uint16_t> removed;
         for (auto it = spi_to_entry_.begin(); it != spi_to_entry_.end();) {
             if (it->second.client_fd == client_fd) {
@@ -85,13 +85,13 @@ public:
         return removed;
     }
 
-    // 查詢目前 mapping 筆數
+    // Get the number of current mappings
     size_t size() {
         std::lock_guard<std::mutex> lock(mu_);
         return spi_to_entry_.size();
     }
 
-    // Debug: 印出所有 mapping（依照插入順序）
+    // Debug: print all mappings in insertion order
     void print_all() {
         std::lock_guard<std::mutex> lock(mu_);
         std::vector<std::pair<uint16_t, Entry>> entries(spi_to_entry_.begin(), spi_to_entry_.end());

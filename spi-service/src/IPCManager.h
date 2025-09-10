@@ -15,7 +15,7 @@
 class IpcManager {
 public:
     static constexpr const size_t MAX_EVENTS = 10;
-    
+
     IpcManager(MessageQueue<Packet>& tx_mq, MessageQueue<Packet>& rx_mq, SeqMapper& seq_mapper, const char* socket_path = SpiCommon::IPC_SOCKET_PATH)
         : tx_queue_(tx_mq), rx_queue_(rx_mq), seq_mapper_(seq_mapper), socket_path_(socket_path) {}
     ~IpcManager() {
@@ -48,7 +48,7 @@ private:
     int listen_fd_ = -1;
     int epoll_fd_ = -1;
     uint16_t seq_{0};
-    
+
     // cmd_id -> set of client_fd
     std::unordered_map<uint16_t, std::unordered_set<int>> cmd_map_;
     // SPI sequence id -> IPC sequence id, client_fd

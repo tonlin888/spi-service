@@ -10,7 +10,7 @@
 //
 // Each message has the following structure:
 //     SEQ_ID: 2 bytes, the message sequence number
-//     COMMAND: 1 byte, the command type
+//     MSG_TYPE: 1 byte, the message type
 //     ERROR_CODE: 1 byte, only valid in spi-service's RESPONSE
 //     DATA: variable-length payload
 //
@@ -32,11 +32,14 @@ namespace SpiCommon {
     //   0xF0 ~ 0xFF: Internal/Debug
 
     // ========== Commands ==========
-    enum class Command : uint8_t {
+    enum class MsgType : uint8_t {
         NONE           = 0x00,  // No action
 
         // Client --> SPI Service
         REGISTER_REQ   = 0x10,  // Re-register client for notifications (expects a response from SPI Service with the same SEQ_ID)
+                                // Clients register the MCU commands they can handle, including both notifications
+                                // (unsolicited MCU messages) and requests (commands requiring a response). The system uses this
+                                // registration to route incoming MCU messages to the appropriate client handler.
         UNREGISTER_REQ = 0x11,  // Remove client from notification list (expects a response from SPI Service with the same SEQ_ID)
 
         // SOC <--> MCU

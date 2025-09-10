@@ -23,17 +23,17 @@ int main() {
         LOGE("[Main] Unknown error occurred");
         return 1;
     }
-    
+
     ipc.start();
     spi.start();
 
-    // 主執行緒
+    // main thread
     while (true) {
         std::this_thread::sleep_for(std::chrono::seconds(1));
     }
-    
-    // 通知 IpcManager / SpiManager 停止
-    ipc.stop(); 
+
+    // Stop IpcManager / SpiManager
+    ipc.stop();
     spi.stop();
 
     return 0;
