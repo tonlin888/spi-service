@@ -126,7 +126,7 @@ void IpcManager::process_cmd(int client_fd, const ClientMessage& msg) {
         case static_cast<uint8_t>(MsgType::SET_REQ):
             LOGI("process_cmd, SET_REQ");
             LOGI("Push IPC Packet, size=%u", msg.data_.size());
-            tx_queue_.push(Packet{PacketSource::IPC, IPCData{client_fd, MessageFlow::SET, seq_, msg.data_}});
+            tx_queue_.push(Packet{PacketSource::IPC, IPCData{client_fd, MessageFlow::SET, msg.seq_, msg.data_}});
             break;
 
         default:
@@ -265,7 +265,7 @@ void IpcManager::rx_run() {
         Packet& pkt = *pkt_opt;
         if (PacketSource::IPC == pkt.source) {
             auto& ipc = std::get<IPCData>(pkt.payload);
-            LOGI("Processing IPC packet len=%zu, %s", ipc.data.size(), bytesToHexString(ipc.data).c_str());
+            LOGI("Processing IPC packet: %s", ipc.toString().c_str());
 
             send_ipc_to_clients(ipc);
          } else {
@@ -292,7 +292,8 @@ void IpcManager::send_ipc_to_clients(const IPCData& ipc) {
             return;
         }
 
-        std::vector<uint8_t> msg = ClientMessage(seq_, MsgType::NOTIFY, ErrorCode::NONE, ipc.data).toBytes();
+        uint16_t seq = (ipc.seq >= 0) ? ipc.seq : seq_;
+        std::vector<uint8_t> msg = ClientMessage(seq, MsgType::NOTIFY, ErrorCode::NONE, ipc.data).toBytes();
         for (int fd : it->second) {
             ssize_t n = send(fd, msg.data(), msg.size(), 0);
             if (n < 0) {

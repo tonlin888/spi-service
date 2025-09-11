@@ -14,6 +14,30 @@
 //     ERROR_CODE: 1 byte, only valid in spi-service's RESPONSE
 //     DATA: variable-length payload
 //
+// Command modes:
+// 1) Execute / Response
+//    Direction: SoC --> MCU
+//    Purpose: Operations that require execution and a reply
+//    Flow: Client sends an Execute Message; after completing the action,
+//          the MCU replies with a Response Message
+//    Rule: The Execute Message and its corresponding Response Message
+//          share the same Sequence ID
+//
+// 2) Set (no Response)
+//    Direction: SoC --> MCU
+//    Purpose: One-way configuration, no acknowledgment required
+//
+// 3) Notify (from MCU)
+//    Direction: MCU --> SoC
+//    Purpose: Event notifications, e.g., sensor data updates
+//
+// 4) Notify / Set
+//    Direction: MCU --> SoC
+//    Purpose: Operations that require execution and a reply
+//    Flow: Client receives a Notify Message from the MCU, performs
+//          the requested action, and replies with a Set Message
+//    Rule: The Notify Message and its corresponding Set Message
+//          share the same Sequence ID
 
 namespace SpiCommon {
 
@@ -25,7 +49,7 @@ namespace SpiCommon {
 
     static constexpr const char* IPC_SOCKET_PATH = "/tmp/spi-service/ipc.sock";
 
-    // Reserved ranges:
+    // Message Type reserved ranges:
     //   0x00 ~ 0x0F: Reserved
     //   0x10 ~ 0x1F: Client/Server commands
     //   0x20 ~ 0xEF: General

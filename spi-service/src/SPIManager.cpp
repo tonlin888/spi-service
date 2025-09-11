@@ -109,17 +109,35 @@ void SpiManager::run() {
         switch (pkt_tx.source) {
             case PacketSource::IPC: {
                 auto& ipc = std::get<IPCData>(pkt_tx.payload);
-                LOGI("Processing IPC packet from fd=%d, len=%zu", ipc.client_fd, ipc.data.size());
+                LOGI("Processing IPC packet, %s", ipc.toString().c_str());
 
                 size_t offset = 0;
-                uint16_t seq_id = (ipc.flow == MessageFlow::EXECUTE) ? seq_mapper_.add_mapping(ipc.seq, ipc.client_fd) : seq_id_;
-                Command cmd = (ipc.flow == MessageFlow::EXECUTE) ? Command::READ_UNREL : Command::WRITE_UNREL;
+                uint16_t mcu_cmd = static_cast<uint16_t>(ipc.data[0]) | (static_cast<uint16_t>(ipc.data[1]) << 8);
+                uint16_t seq_id = seq_id_;
+                Command cmd = Command::WRITE_UNREL;
+
+                if (ipc.flow == MessageFlow::EXECUTE) {
+                    LOGI("MessageFlow::EXECUTE");
+                    seq_id = seq_mapper_.add_mapping(ipc.seq, ipc.client_fd, static_cast<SpiCommon::McuCommand>(mcu_cmd));
+                    cmd = Command::READ_UNREL;
+                } else if (ipc.flow == MessageFlow::SET) {
+                    SeqMapper::Entry entry;
+                    seq_mapper_.find_mapping(ipc.seq, entry);
+                    LOGI("MessageFlow::SET, mcu_cmd=%u, client_fd=%d, cmd=%u", mcu_cmd, entry.client_fd, static_cast<uint16_t>(entry.cmd));
+                    if (mcu_cmd == static_cast<uint16_t>(entry.cmd)) {
+                        // Reply to MCU read using MCU's sequence ID
+                        seq_id = entry.seq;
+                        cmd = Command::RESPONSE;
+                        seq_mapper_.remove_mapping(ipc.seq);
+                    }
+                }
 
                 while (offset < ipc.data.size()) {
                     SpiFrame spi_frame = SpiFrame(Direction::SOC2MCU, seq_id, cmd, ipc.data, offset);
                     if (!spi_frame.is_valid()) {
                         LOGI("Invalid frame at offset %zu, data size=%zu", offset, ipc.data.size());
                         offset = ipc.data.size();
+                        seq_mapper_.remove_mapping(seq_id);
                         break;
                     }
                     std::vector<uint8_t> bytes = spi_frame.toBytes();
@@ -280,9 +298,15 @@ std::optional<Packet> SpiManager::gen_ipc_packet(const SpiFrame& spi_frame) {
     Packet pkt_rx;
     pkt_rx.source = PacketSource::IPC;
 
-    if (spi_frame.cmd_id_ == Command::WRITE_UNREL || spi_frame.cmd_id_ == Command::READ_UNREL) {
-        LOGI("Command::WRITE_UNREL || spi_frame.cmd_id_ == Command::READ_UNREL");
+    if (spi_frame.cmd_id_ == Command::WRITE_UNREL) {
+        LOGI("Command::WRITE_UNREL");
         pkt_rx.payload = IPCData{-1, MessageFlow::NOTIFY, spi_frame.seq_id_, spi_frame.payload_}; // client fd -1 means broadcast
+        return pkt_rx;
+    } else if  (spi_frame.cmd_id_ == Command::READ_UNREL) {
+        LOGI("Command::READ_UNREL");
+        uint16_t mcu_cmd = static_cast<uint16_t>(spi_frame.payload_[0]) | (static_cast<uint16_t>(spi_frame.payload_[1]) << 8);
+        uint16_t seq_id = seq_mapper_.add_mapping(spi_frame.seq_id_, -1, static_cast<SpiCommon::McuCommand>(mcu_cmd));
+        pkt_rx.payload = IPCData{-1, MessageFlow::NOTIFY, seq_id, spi_frame.payload_}; // client fd -1 means broadcast
         return pkt_rx;
     } else if (spi_frame.cmd_id_ == Command::RESPONSE) {
         LOGI("Command::RESPONSE");
@@ -410,7 +434,12 @@ SpiFrame SpiManager::makeTestSpiFrame(uint16_t seq_id) {
         case 2:
             // MCU response to SOC
             cmd = Command::RESPONSE;
-            payload = {0x06, 0x00, 0xEF, 0xEE, 0xED};
+            payload = {0x06, 0x00, 0xED, 0xEE, 0xEF};
+            break;
+        case 3:
+            // MCU read to SOC
+            cmd = Command::READ_UNREL;
+            payload = {0x07, 0x00, 0xC1, 0xC2, 0xC3};
             break;
         default:
             payload = {0x02, 0x00, 0x11, 0x12, 0x13};

@@ -62,7 +62,7 @@ std::vector<uint8_t> hexStringToBytes(const std::string& hex) {
 // Return default command title based on command number
 std::string getCommandTitle(int cmd) {
     switch (cmd) {
-        case 1: return "Register: 02, 03, 04, 05";
+        case 1: return "Register: 02, 03, 04, 05, 07";
         case 2: return "Unregister: 04 05";
         case 3: return "Execute MCU Command";
         case 4: return "Set MCU Red LED On";
@@ -74,12 +74,12 @@ std::string getCommandTitle(int cmd) {
 // Return default hex string based on command number
 std::string getCommandHexString(int cmd) {
     switch(cmd) {
-        // Register the commands 02 03 04 05; the spi-service responds with a message carrying the same SEQ_ID indicating success or failure
+        // Register the commands 02 03 04 05 07; the spi-service responds with a message carrying the same SEQ_ID indicating success or failure
         // and notifications for each of the four commands (02, 03, 04, 05).
         case 1: return intToHexStringLE(global_seq) + " "                             // --> SEQ_ID
                 + intToHexStringLE(static_cast<uint8_t>(MsgType::REGISTER_REQ)) + " " // --> COMMAND
                 + "00" + " "                                                          // --> ERROR
-                + "02 03 04 05";                                                      // --> DATA
+                + "02 03 04 05 07";                                                      // --> DATA
 
         // Unregister the commands 02 and 03; the spi-service responds with a message carrying the same SEQ_ID indicating success or failure
         // and no further notifications will be received for these two commands.
@@ -148,6 +148,16 @@ void socketReceiver(int sock) {
         ssize_t n = read(sock, buf, sizeof(buf) - 1);
         if (n > 0) {
             std::cout << "Received --> " << msgToHexString(reinterpret_cast<uint8_t *>(buf), n) << std::endl;
+            if (sizeof(buf) > 5) {
+                uint16_t mcu_cmd = static_cast<uint16_t>(buf[4]) | (static_cast<uint16_t>(buf[5]) << 8);
+                // result is required for mcu command 07
+                if (mcu_cmd == 0x07) {                    
+                    std::vector<uint8_t> data = hexStringToBytes("01 00 21 00 07 00 D1 D2 D3");
+                    if (write(sock, data.data(), data.size()) < 0) {
+                        perror("write");
+                    }
+                }
+            }
             std::cout << "Command> ";
         } else if (n == 0) {
             std::cout << "[Receiver] Connection closed by server.\n";

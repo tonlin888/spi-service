@@ -42,7 +42,7 @@ public:
         }
 
         mapped_to_entry_[mapped_seq] = Entry{seq, client_fd, cmd, next_order_++};
-        LOGI("add_mapping, mapped_seq=%u = {seq=%u, client_fd=%d, cmd=%u}", mapped_seq, seq, client_fd, static_cast<uint16_t>(cmd));
+        LOGI("add_mapping, mapped_seq=%u -> {seq=%u, client_fd=%d, cmd=%u}", mapped_seq, seq, client_fd, static_cast<uint16_t>(cmd));
         return mapped_seq;
     }
 
@@ -60,7 +60,7 @@ public:
             LOGI("find_mapping, mapped_seq=%u not found", mapped_seq);
         } else {
             out_entry = it->second;
-            LOGI("find_mapping, mapped_seq=%u = {seq=%u, client_fd=%d}", out_entry.seq, out_entry.client_fd);
+            LOGI("find_mapping, mapped_seq=%u = {seq=%u, client_fd=%d, cmd=%u}", mapped_seq, out_entry.seq, out_entry.client_fd, out_entry.cmd);
         }
     }
 
