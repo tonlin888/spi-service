@@ -112,25 +112,7 @@ void SpiManager::run() {
                 LOGI("Processing IPC packet, %s", ipc.toString().c_str());
 
                 size_t offset = 0;
-                uint16_t mcu_cmd = static_cast<uint16_t>(ipc.data[0]) | (static_cast<uint16_t>(ipc.data[1]) << 8);
-                uint16_t seq_id = seq_id_;
-                Command cmd = Command::WRITE_UNREL;
-
-                if (ipc.flow == MessageFlow::EXECUTE) {
-                    LOGI("MessageFlow::EXECUTE");
-                    seq_id = seq_mapper_.add_mapping(ipc.seq, ipc.client_fd, static_cast<SpiCommon::McuCommand>(mcu_cmd));
-                    cmd = Command::READ_UNREL;
-                } else if (ipc.flow == MessageFlow::SET) {
-                    SeqMapper::Entry entry;
-                    seq_mapper_.find_mapping(ipc.seq, entry);
-                    LOGI("MessageFlow::SET, mcu_cmd=%u, client_fd=%d, cmd=%u", mcu_cmd, entry.client_fd, static_cast<uint16_t>(entry.cmd));
-                    if (mcu_cmd == static_cast<uint16_t>(entry.cmd)) {
-                        // Reply to MCU read using MCU's sequence ID
-                        seq_id = entry.seq;
-                        cmd = Command::RESPONSE;
-                        seq_mapper_.remove_mapping(ipc.seq);
-                    }
-                }
+                auto [seq_id, cmd] = get_spi_frame_params(ipc);
 
                 while (offset < ipc.data.size()) {
                     SpiFrame spi_frame = SpiFrame(Direction::SOC2MCU, seq_id, cmd, ipc.data, offset);
@@ -328,6 +310,38 @@ std::optional<Packet> SpiManager::gen_ipc_packet(const SpiFrame& spi_frame) {
         LOGE("Unknown spi_frame.cmd_id_ = %d", spi_frame.cmd_id_);
         return std::nullopt;
     }
+}
+
+std::pair<uint16_t, Command> SpiManager::get_spi_frame_params(const IPCData& ipc) {
+    uint16_t mcu_cmd = static_cast<uint16_t>(ipc.data[0]) |
+                       (static_cast<uint16_t>(ipc.data[1]) << 8);
+
+    uint16_t seq_id;
+    Command cmd;
+
+    if (ipc.flow == MessageFlow::EXECUTE) {
+        LOGI("MessageFlow::EXECUTE");
+        seq_id = seq_mapper_.add_mapping(ipc.seq, ipc.client_fd,
+                                        static_cast<SpiCommon::McuCommand>(mcu_cmd));
+        cmd = Command::READ_UNREL;
+    } else if (ipc.flow == MessageFlow::SET) {
+        SeqMapper::Entry entry;
+        seq_mapper_.find_mapping(ipc.seq, entry);
+        LOGI("MessageFlow::SET, mcu_cmd=%u, client_fd=%d, cmd=%u",
+             mcu_cmd, entry.client_fd, static_cast<uint16_t>(entry.cmd));
+
+        if (mcu_cmd == static_cast<uint16_t>(entry.cmd)) {
+            // Reply to MCU read using MCU's sequence ID
+            seq_id = entry.seq;
+            cmd = Command::RESPONSE;
+            seq_mapper_.remove_mapping(ipc.seq);
+        }
+    } else {
+        seq_id = seq_mapper_.allocate_mapped_seq();
+        cmd = Command::WRITE_UNREL;
+    }
+
+    return {seq_id, cmd};
 }
 
 #ifdef SIMULATE_GPIO_BEHAVIOR

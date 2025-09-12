@@ -28,7 +28,6 @@ public:
     uint16_t add_mapping(uint16_t seq, int client_fd, SpiCommon::McuCommand cmd = SpiCommon::McuCommand::SUB_CMD_INVALID) {
         std::lock_guard<std::mutex> lock(mu_);
         uint16_t mapped_seq = next_mapped_seq_++;
-        if (next_mapped_seq_ == 0) next_mapped_seq_ = 1; // avoid mapped_seq = 0
 
         // Remove the oldest if exceeding MAX_ENTRIES
         if (mapped_to_entry_.size() >= MAX_ENTRIES) {
@@ -44,6 +43,21 @@ public:
         mapped_to_entry_[mapped_seq] = Entry{seq, client_fd, cmd, next_order_++};
         LOGI("add_mapping, mapped_seq=%u -> {seq=%u, client_fd=%d, cmd=%u}", mapped_seq, seq, client_fd, static_cast<uint16_t>(cmd));
         return mapped_seq;
+    }
+
+    // Get a new mapped_seq without inserting an entry
+    uint16_t allocate_mapped_seq() {
+        std::lock_guard<std::mutex> lock(mu_);
+        uint16_t mapped_seq = next_mapped_seq_++;
+        LOGI("allocate_mapped_seq, mapped_seq=%u", mapped_seq);
+        return mapped_seq;
+    }
+
+    // Set the next mapped_seq value (thread-safe)
+    void set_next_mapped_seq(uint16_t value) {
+        std::lock_guard<std::mutex> lock(mu_);
+        next_mapped_seq_ = value;
+        LOGI("set_next_mapped_seq, next_mapped_seq_=%u", next_mapped_seq_);
     }
 
     // Find mapping. If not found, client_fd = -1

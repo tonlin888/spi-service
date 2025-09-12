@@ -52,6 +52,7 @@ private:
     bool init_gpio();         // Initialize GPIO and epoll
     bool isSpiReadRequired(uint8_t gpio_level);
     std::optional<Packet> gen_ipc_packet(const SpiFrame& spi_frame);
+    std::pair<uint16_t, SpiFrame::Command> get_spi_frame_params(const IPCData& ipc);
 
 #ifdef SIMULATE_GPIO_BEHAVIOR
     // Mock GPIO for simulation
