@@ -184,7 +184,7 @@ inline std::string msgToHexString(const uint8_t* buf, size_t len) {
             oss << std::setw(2) << std::setfill('0') << static_cast<int>(buf[offset + i]);
         }
     } else {
-        oss << "(invalid length)";
+        // oss << "(invalid length)";
     }
     offset += payload_len;
 
@@ -265,7 +265,7 @@ inline bool unpackMessage(const std::vector<uint8_t>& buf, Message& msg_out) {
 
     // DATA
     if (offset + payload_len > buf.size() - 2) {
-        return false; // payload 長度錯誤
+        return false; // payload length is incorrect
     }
     msg_out.data.assign(buf.begin() + offset, buf.begin() + offset + payload_len);
     offset += payload_len;

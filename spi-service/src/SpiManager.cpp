@@ -172,6 +172,7 @@ void SpiManager::run() {
 
 #ifdef SIMULATE_GPIO_BEHAVIOR
                 recv_buf = makeTestSpiFrame(seq_id_).toBytes();
+                seq_id_++;
 #endif
                 auto spi_frame_opt  = SpiFrame::fromBytes(recv_buf);
                 if (spi_frame_opt) {
@@ -314,7 +315,7 @@ std::optional<Packet> SpiManager::gen_ipc_packet(const SpiFrame& spi_frame) {
         seq_mapper_.find_mapping(spi_frame.seq_id_, entry);
 
         if (entry.client_fd < 0) { // No matching client_fd found
-            LOGE("no (client fd, IPC's SEQ_ID) map to this SPI's SEQ_ID(%d)", spi_frame.seq_id_);
+            LOGE("no client's seq id map to this spi's seq id(%d)", spi_frame.seq_id_);
             return std::nullopt;
         } else {
             seq_mapper_.remove_mapping(spi_frame.seq_id_);

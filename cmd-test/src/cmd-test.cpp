@@ -75,10 +75,13 @@ void socketReceiver(int sock) {
         if (n > 0) {
             std::cout << "Received --> " << msgToHexString(reinterpret_cast<uint8_t *>(buf), n) << std::endl;
             if (sizeof(buf) > 5) {
-                uint16_t mcu_cmd = static_cast<uint16_t>(buf[4]) | (static_cast<uint16_t>(buf[5]) << 8);
+                uint16_t mcu_cmd = static_cast<uint16_t>(buf[6]) | (static_cast<uint16_t>(buf[7]) << 8);
                 // result is required for mcu command 07
-                if (mcu_cmd == 0x07) {                    
-                    std::vector<uint8_t> data = hexStringToBytes("01 00 21 00 07 00 D1 D2 D3");
+                if (mcu_cmd == 0x07) {
+                    std::vector<uint8_t> data = packMessage(0x0001,
+                        MsgType::SET_REQ,
+                        ErrorCode::NONE,
+                        hexStringToBytes("07 00 D1 D2 D3"));
                     if (write(sock, data.data(), data.size()) < 0) {
                         perror("write");
                     }
