@@ -7,6 +7,7 @@
 #include "SeqMapper.h"
 
 #define SIMULATE_GPIO_BEHAVIOR 1
+#define ENABLE_SYNCHRONIZED_READ 1
 
 // SPI Frame format:
 // DIRECTION (1 byte): MCU->SOC: 0x55, SOC->MCU: 0xAA
@@ -20,7 +21,6 @@ class SpiManager {
 public:
     static constexpr const char* GPIO_PATH = "/sys/class/gpio/gpio502/value";
     static constexpr const char* DEFAULT_SPI_DEV = "/dev/spidev2.0";
-    static constexpr size_t MAX_PAYLOAD = 120;
 
     SpiManager(MessageQueue<Packet>& tx_mq, MessageQueue<Packet>& rx_mq, SeqMapper& seq_mapper);
     ~SpiManager();

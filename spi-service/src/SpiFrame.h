@@ -27,7 +27,8 @@ public:
         ACK_STATUS = 0x03,
         WRITE = 0x04,
         READ = 0x05,
-        SERVICE_MCU_REQUEST = 0x06
+        SERVICE_MCU_REQUEST = 0x06,
+        UNKNOWN_CMD = UINT8_MAX,
     };
 
     Direction direction_;

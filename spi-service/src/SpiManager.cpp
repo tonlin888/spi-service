@@ -95,7 +95,7 @@ void SpiManager::stop() {
 
 void SpiManager::run() {
     LOGI("Manager running...\n");
-    std::vector<uint8_t> recv_buf(MAX_PAYLOAD);
+    std::vector<uint8_t> recv_buf(SpiCommon::MAX_SPI_FRAME_SIZE);
 
      while (running_) {
         auto pkt_opt = tx_queue_.pop();
@@ -124,9 +124,22 @@ void SpiManager::run() {
                     }
                     std::vector<uint8_t> bytes = spi_frame.toBytes();
                     LOGI("Send to slave: %s\n", bytesToHexString(bytes).c_str());
+#ifdef ENABLE_SYNCHRONIZED_READ
+                    spi_transfer(bytes.data(), recv_buf.data(), bytes.size());
+#else
                     spi_transfer(bytes.data(), nullptr, bytes.size());
+#endif
                     offset = spi_frame.next_;
                 }
+#ifdef ENABLE_SYNCHRONIZED_READ
+                auto spi_frame_opt  = SpiFrame::fromBytes(recv_buf);
+                if (spi_frame_opt) {
+                    auto pkt_up_opt = gen_ipc_packet(*spi_frame_opt);
+                    if (pkt_up_opt) rx_queue_.push(*pkt_up_opt);
+                } else {
+                    LOGE("Failed to generate IPC Packet from SPI frame");
+                }
+#endif
                 seq_id_++;
                 break;
             }
@@ -177,11 +190,36 @@ int SpiManager::spi_transfer(const uint8_t* tx_buf, uint8_t* rx_buf, size_t len)
     tr.rx_buf = (unsigned long)rx_buf;
 
     std::lock_guard<std::mutex> lock(spi_mutex_);
+
+#ifdef ENABLE_SYNCHRONIZED_READ
+
+    #define MCU_READY_FLAG 0x55
+    #define READ_RETRY_DELAY_MS 10
+    #define READ_RETRY_COUNT 10
+
+    int i;
+    for (i = 0; i < READ_RETRY_COUNT; ++i) {
+        int ret = ioctl(spi_fd_, SPI_IOC_MESSAGE(1), &tr);
+        if (ret < 0) {
+            LOGE("SPI transfer failed: %s", strerror(errno));
+            continue;
+        }
+        if (rx_buf[0] == MCU_READY_FLAG) {
+            LOGI("Received valid data from MCU.");
+            LOGI("received: %s", SpiCommon::bytesToHexString(rx_buf, SpiCommon::MAX_SPI_FRAME_SIZE).c_str());
+            LOGI("--- SOC Read Complete ---");
+            break;
+        }
+        usleep(READ_RETRY_DELAY_MS * 1000);
+    }
+    if (i >= READ_RETRY_COUNT) return -1;
+#else
     int ret = ioctl(spi_fd_, SPI_IOC_MESSAGE(1), &tr);
     if (ret < 1) {
-        LOGE("SPI transfer failed: %s", strerror(errno));
-        return -1;
+       LOGE("SPI transfer failed: %s", strerror(errno));
+       return -1;
     }
+#endif // ENABLE_SYNCHRONIZED_READ
     return 0;
 }
 
@@ -317,7 +355,7 @@ std::pair<uint16_t, Command> SpiManager::get_spi_frame_params(const IPCData& ipc
                        (static_cast<uint16_t>(ipc.data[1]) << 8);
 
     uint16_t seq_id;
-    Command cmd;
+    Command cmd = Command::UNKNOWN_CMD;
 
     if (ipc.flow == MessageFlow::EXECUTE) {
         LOGI("MessageFlow::EXECUTE");
@@ -325,18 +363,19 @@ std::pair<uint16_t, Command> SpiManager::get_spi_frame_params(const IPCData& ipc
                                         static_cast<SpiCommon::McuCommand>(mcu_cmd));
         cmd = Command::READ_UNREL;
     } else if (ipc.flow == MessageFlow::SET) {
+        LOGI("MessageFlow::SET");
         SeqMapper::Entry entry;
         seq_mapper_.find_mapping(ipc.seq, entry);
-        LOGI("MessageFlow::SET, mcu_cmd=%u, client_fd=%d, cmd=%u",
-             mcu_cmd, entry.client_fd, static_cast<uint16_t>(entry.cmd));
 
-        if (mcu_cmd == static_cast<uint16_t>(entry.cmd)) {
+        if (entry.client_fd == ipc.client_fd) {
             // Reply to MCU read using MCU's sequence ID
             seq_id = entry.seq;
             cmd = Command::RESPONSE;
             seq_mapper_.remove_mapping(ipc.seq);
         }
-    } else {
+    }
+
+    if (cmd == Command::UNKNOWN_CMD) {
         seq_id = seq_mapper_.allocate_mapped_seq();
         cmd = Command::WRITE_UNREL;
     }
