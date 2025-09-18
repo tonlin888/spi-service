@@ -55,13 +55,13 @@ std::vector<uint8_t> getMessage(int cmd) {
         case 3: return packMessage(global_seq,
                     MsgType::EXECUTE_REQ,
                     ErrorCode::NONE,
-                    hexStringToBytes("06 00 01"));
+                    hexStringToBytes("00 00"));
 
         // Set the red LED to ON; no response message is returned.
         case 4: return packMessage(global_seq,
                     MsgType::SET_REQ,
                     ErrorCode::NONE,
-                    hexStringToBytes("01 01 00"));
+                    hexStringToBytes("01 00 01"));
 
         default: return std::vector<uint8_t>{}; // default
     }

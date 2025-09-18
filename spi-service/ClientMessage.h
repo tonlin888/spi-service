@@ -179,7 +179,7 @@ public:
             << ", TYP=0x" << std::setw(2) << std::setfill('0') << static_cast<int>(msg_t_)
             << ", ERR=0x" << std::setw(2) << std::setfill('0') << static_cast<int>(err_)
             << ", LEN=0x" << std::setw(4) << std::setfill('0') << len_
-            << ", DATA=" << bytesToHexString(data_.data(), data_.size())
+            << ", DATA=" << SpiCommon::bytesToHexString(data_.data(), data_.size())
             << ", CHKSUM=0x" << std::setw(4) << std::setfill('0') << checksum_;
     
         return oss.str();

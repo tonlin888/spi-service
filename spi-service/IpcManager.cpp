@@ -159,7 +159,7 @@ void IpcManager::process_message(int client_fd, const uint8_t* buf, size_t n) {
 void IpcManager::handle_client(int client_fd) {
     uint8_t buf[SpiCommon::MAX_IPC_PACKET_SIZE];
     ssize_t n = recv(client_fd, buf, sizeof(buf), 0);
-    LOGI("Received %d, bytes from fd=%d: %s", n, client_fd, bytesToHexString(buf, n, 20).c_str());
+    LOGI("Received %d, bytes from fd=%d: %s", n, client_fd, SpiCommon::bytesToHexString(buf, n).c_str());
 
     if (n > 0) {
         process_message(client_fd, buf, n);
@@ -299,7 +299,7 @@ void IpcManager::send_ipc_to_clients(const IPCData& ipc) {
             if (n < 0) {
                 LOGE("Failed to send to client fd=%d: %s", fd, strerror(errno));
             } else {
-                LOGI("Sent %zd bytes to client fd=%d for cmd_id=0x%04X, %s", n, fd, cmd_id, bytesToHexString(msg).c_str());
+                LOGI("Sent %zd bytes to client fd=%d for cmd_id=0x%04X, %s", n, fd, cmd_id, SpiCommon::bytesToHexString(msg).c_str());
             }
         }
     } else if (ipc.flow == MessageFlow::RESPONSE) {
@@ -308,7 +308,7 @@ void IpcManager::send_ipc_to_clients(const IPCData& ipc) {
         if (n < 0) {
             LOGE("Failed to send to client fd=%d: %s", ipc.client_fd, strerror(errno));
         } else {
-            LOGI("Sent %zd bytes to client fd=%d for cmd_id=0x%04X, %s", n, ipc.client_fd, cmd_id, bytesToHexString(msg).c_str());
+            LOGI("Sent %zd bytes to client fd=%d for cmd_id=0x%04X, %s", n, ipc.client_fd, cmd_id, SpiCommon::bytesToHexString(msg).c_str());
         }
     } else {
         LOGE("Unknown message flow %d", ipc.flow);

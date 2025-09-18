@@ -6,10 +6,6 @@
 #include <sys/socket.h>
 #include <sys/epoll.h>
 
-#ifdef SIMULATE_GPIO_BEHAVIOR
-#include <sys/inotify.h> // simulate gpio
-#endif
-
 #include <linux/spi/spidev.h>
 #include <poll.h>
 #include <fcntl.h>
@@ -57,13 +53,6 @@ SpiManager::SpiManager(MessageQueue<Packet>& tx_mq, MessageQueue<Packet>& rx_mq,
         LOGE("Failed to initialize GPIO, stopping SpiManager");
         return;
     }
-
-#ifdef SIMULATE_GPIO_BEHAVIOR
-    if (!init_mock_gpio()) {
-        LOGE("Failed to initialize MOCK GPIO, stopping SpiManager");
-        return;
-    }
-#endif
 }
 
 SpiManager::~SpiManager() {
@@ -123,23 +112,26 @@ void SpiManager::run() {
                         break;
                     }
                     std::vector<uint8_t> bytes = spi_frame.toBytes();
-                    LOGI("Send to slave: %s\n", bytesToHexString(bytes).c_str());
-#ifdef ENABLE_SYNCHRONIZED_READ
-                    spi_transfer(bytes.data(), recv_buf.data(), bytes.size());
-#else
-                    spi_transfer(bytes.data(), nullptr, bytes.size());
-#endif
+                    LOGI("Send to slave: %s\n", SpiCommon::bytesToHexString(bytes).c_str());
+
+                    if (cmd == Command::READ_UNREL) {
+                        spi_transfer(bytes.data(), recv_buf.data(), bytes.size());
+                    } else {
+                        spi_transfer(bytes.data(), nullptr, bytes.size());
+                    }
                     offset = spi_frame.next_;
                 }
-#ifdef ENABLE_SYNCHRONIZED_READ
-                auto spi_frame_opt  = SpiFrame::fromBytes(recv_buf);
-                if (spi_frame_opt) {
-                    auto pkt_up_opt = gen_ipc_packet(*spi_frame_opt);
-                    if (pkt_up_opt) rx_queue_.push(*pkt_up_opt);
-                } else {
-                    LOGE("Failed to generate IPC Packet from SPI frame");
+
+                if (cmd == Command::READ_UNREL) {
+                    auto spi_frame_opt  = SpiFrame::fromBytes(recv_buf);
+                    if (spi_frame_opt) {
+                        auto pkt_up_opt = gen_ipc_packet(*spi_frame_opt);
+                        if (pkt_up_opt) rx_queue_.push(*pkt_up_opt);
+                    } else {
+                        LOGE("Failed to generate IPC Packet from SPI frame");
+                    }
                 }
-#endif
+
                 seq_id_++;
                 break;
             }
@@ -163,12 +155,8 @@ void SpiManager::run() {
                 LOGI("Processing READ packet");
 
                 spi_transfer(nullptr, recv_buf.data(), recv_buf.size());
-                LOGI("Received from slave: %s", bytesToHexString(recv_buf).c_str());
+                LOGI("Received from slave: %s", SpiCommon::bytesToHexString(recv_buf).c_str());
 
-#ifdef SIMULATE_GPIO_BEHAVIOR
-                recv_buf = makeTestSpiFrame(seq_id_).toBytes();
-                seq_id_++;
-#endif
                 auto spi_frame_opt  = SpiFrame::fromBytes(recv_buf);
                 if (spi_frame_opt) {
                     auto pkt_up_opt = gen_ipc_packet(*spi_frame_opt);
@@ -182,7 +170,11 @@ void SpiManager::run() {
     }
 }
 
-int SpiManager::spi_transfer(const uint8_t* tx_buf, uint8_t* rx_buf, size_t len) {
+int SpiManager::spi_transfer(const uint8_t* tx_buf, uint8_t* rx_buf, size_t len, bool sync) {
+    #define MCU_READY_FLAG 0x55
+    #define READ_RETRY_DELAY_MS 10
+    #define READ_RETRY_COUNT 10    
+
     struct spi_ioc_transfer tr{};
     tr.len = len;
     tr.speed_hz = SPI_SPEED;
@@ -191,35 +183,30 @@ int SpiManager::spi_transfer(const uint8_t* tx_buf, uint8_t* rx_buf, size_t len)
 
     std::lock_guard<std::mutex> lock(spi_mutex_);
 
-#ifdef ENABLE_SYNCHRONIZED_READ
-
-    #define MCU_READY_FLAG 0x55
-    #define READ_RETRY_DELAY_MS 10
-    #define READ_RETRY_COUNT 10
-
-    int i;
-    for (i = 0; i < READ_RETRY_COUNT; ++i) {
+    if (rx_buf != nullptr && sync) {
+        int i;
+        for (i = 0; i < READ_RETRY_COUNT; ++i) {
+            int ret = ioctl(spi_fd_, SPI_IOC_MESSAGE(1), &tr);
+            if (ret < 0) {
+                LOGE("SPI transfer failed: %s", strerror(errno));
+                continue;
+            }
+            if (rx_buf[0] == MCU_READY_FLAG) {
+                LOGI("Received valid data from MCU.");
+                LOGI("received: %s", SpiCommon::bytesToHexString(rx_buf, SpiCommon::MAX_SPI_FRAME_SIZE).c_str());
+                LOGI("--- SOC Read Complete ---");
+                break;
+            }
+            usleep(READ_RETRY_DELAY_MS * 1000);
+        }
+        if (i >= READ_RETRY_COUNT) return -1;
+    } else {
         int ret = ioctl(spi_fd_, SPI_IOC_MESSAGE(1), &tr);
-        if (ret < 0) {
+        if (ret < 1) {
             LOGE("SPI transfer failed: %s", strerror(errno));
-            continue;
+            return -1;
         }
-        if (rx_buf[0] == MCU_READY_FLAG) {
-            LOGI("Received valid data from MCU.");
-            LOGI("received: %s", SpiCommon::bytesToHexString(rx_buf, SpiCommon::MAX_SPI_FRAME_SIZE).c_str());
-            LOGI("--- SOC Read Complete ---");
-            break;
-        }
-        usleep(READ_RETRY_DELAY_MS * 1000);
     }
-    if (i >= READ_RETRY_COUNT) return -1;
-#else
-    int ret = ioctl(spi_fd_, SPI_IOC_MESSAGE(1), &tr);
-    if (ret < 1) {
-       LOGE("SPI transfer failed: %s", strerror(errno));
-       return -1;
-    }
-#endif // ENABLE_SYNCHRONIZED_READ
     return 0;
 }
 
@@ -321,13 +308,13 @@ std::optional<Packet> SpiManager::gen_ipc_packet(const SpiFrame& spi_frame) {
 
     if (spi_frame.cmd_id_ == Command::WRITE_UNREL) {
         LOGI("Command::WRITE_UNREL");
-        pkt_rx.payload = IPCData{-1, MessageFlow::NOTIFY, spi_frame.seq_id_, spi_frame.payload_}; // client fd -1 means broadcast
+        pkt_rx.payload = IPCData{-1, MessageFlow::NOTIFY, spi_frame.seq_id_, spi_frame.get_effective_payload()}; // client fd -1 means broadcast
         return pkt_rx;
     } else if  (spi_frame.cmd_id_ == Command::READ_UNREL) {
         LOGI("Command::READ_UNREL");
         uint16_t mcu_cmd = static_cast<uint16_t>(spi_frame.payload_[0]) | (static_cast<uint16_t>(spi_frame.payload_[1]) << 8);
         uint16_t seq_id = seq_mapper_.add_mapping(spi_frame.seq_id_, -1, static_cast<SpiCommon::McuCommand>(mcu_cmd));
-        pkt_rx.payload = IPCData{-1, MessageFlow::NOTIFY, seq_id, spi_frame.payload_}; // client fd -1 means broadcast
+        pkt_rx.payload = IPCData{-1, MessageFlow::NOTIFY, seq_id, spi_frame.get_effective_payload()}; // client fd -1 means broadcast
         return pkt_rx;
     } else if (spi_frame.cmd_id_ == Command::RESPONSE) {
         LOGI("Command::RESPONSE");
@@ -341,7 +328,7 @@ std::optional<Packet> SpiManager::gen_ipc_packet(const SpiFrame& spi_frame) {
             seq_mapper_.remove_mapping(spi_frame.seq_id_);
         }
 
-        pkt_rx.payload = IPCData{entry.client_fd, MessageFlow::RESPONSE, entry.seq, spi_frame.payload_};
+        pkt_rx.payload = IPCData{entry.client_fd, MessageFlow::RESPONSE, entry.seq, spi_frame.get_effective_payload()};
         return pkt_rx;
     }
     else {
@@ -382,128 +369,3 @@ std::pair<uint16_t, Command> SpiManager::get_spi_frame_params(const IPCData& ipc
 
     return {seq_id, cmd};
 }
-
-#ifdef SIMULATE_GPIO_BEHAVIOR
-bool SpiManager::init_mock_gpio() {
-    // Create the file to ensure it exists
-    int fd = open(MOCK_GPIO_PATH, O_CREAT | O_RDWR, 0644);
-    if (fd < 0) {
-        LOGE("Failed to create mock gpio file: %s", strerror(errno));
-        return false;
-    }
-    close(fd);
-
-    inotify_fd_ = inotify_init();
-    if (inotify_fd_ < 0) {
-        LOGE("Failed to init inotify: %s", strerror(errno));
-        return false;
-    }
-
-    watch_fd_ = inotify_add_watch(inotify_fd_, MOCK_GPIO_PATH, IN_MODIFY);
-    if (watch_fd_ < 0) {
-        LOGE("Failed to add watch: %s", strerror(errno));
-        close(inotify_fd_);
-        return false;
-    }
-
-    // Open the mock file (used instead of gpio_fd_)
-    gpio_fd2_ = open(MOCK_GPIO_PATH, O_RDONLY);
-    if (gpio_fd2_ < 0) {
-        LOGE("Failed to open mock gpio file: %s", strerror(errno));
-        return false;
-    }
-
-    // Start the monitoring thread
-    gpio_thread2_ = std::thread(&SpiManager::mockGpioThread, this);
-    return true;
-}
-
-uint8_t SpiManager::check_mock_gpio_level_and_notify(uint8_t &last_level) {
-    char value[2];
-    lseek(gpio_fd2_, 0, SEEK_SET);
-    ssize_t bytes_read = read(gpio_fd2_, value, 1);
-    if (bytes_read <= 0) {
-        LOGE("Failed to read MOCK GPIO level: %s", strerror(errno));
-        return last_level; // Return the previous value if reading fails
-    }
-
-    uint8_t new_level = (value[0] - 0x30);
-    if (new_level != last_level) {
-        last_level = new_level;
-
-        Packet pkt;
-        pkt.source = PacketSource::GPIO;
-        pkt.payload = GPIOData{new_level};
-        tx_queue_.push(pkt);
-
-        LOGI("MOCK GPIO level changed to %u", new_level);
-    } else {
-        LOGI("MOCK GPIO level no changed, %u", last_level);
-    }
-    return last_level;
-}
-
-void SpiManager::mockGpioThread() {
-    char buf[1024];
-    uint8_t level = 1; // default high
-
-    while (running_) {
-        int len = read(inotify_fd_, buf, sizeof(buf));
-        LOGI("mockGpioThread, len=%d", len);
-        if (len <= 0) {
-            usleep(100 * 1000); // 0.1s
-            continue;
-        }
-
-        // If the file is modified → check the GPIO level and send the event
-        check_mock_gpio_level_and_notify(level);
-    }
-}
-
-SpiFrame SpiManager::makeTestSpiFrame(uint16_t seq_id) {
-    char value[2];
-    std::vector<uint8_t> payload;
-    Command cmd = Command::WRITE_UNREL;
-
-    lseek(gpio_fd2_, 0, SEEK_SET);
-    ssize_t bytes_read = read(gpio_fd2_, value, 1);
-
-    uint8_t gpio_level = 0;
-    if (bytes_read <= 0) {
-        LOGE("makeTestSpiFrame, Failed to read MOCK GPIO level: %s", strerror(errno));
-    } else {
-        gpio_level = (value[0] - 0x30);
-    }
-
-    // sub cmd(2) + data
-    switch (gpio_level) {
-        case 0:
-            // MCU write to SoC
-            cmd = Command::WRITE_UNREL;
-            payload = {0x04, 0x00, 0x12, 0x13};
-            break;
-        case 1:
-            // GPIO High ==> MCU no data to write
-            break;
-        case 2:
-            // MCU response to SOC
-            cmd = Command::RESPONSE;
-            payload = {0x06, 0x00, 0xED, 0xEE, 0xEF};
-            break;
-        case 3:
-            // MCU read to SOC
-            cmd = Command::READ_UNREL;
-            payload = {0x07, 0x00, 0xC1, 0xC2, 0xC3};
-            break;
-        default:
-            payload = {0x02, 0x00, 0x11, 0x12, 0x13};
-            break;
-    }
-
-    SpiFrame frame(Direction::MCU2SOC, seq_id, cmd, payload);
-
-    LOGI("makeTestSpiFrame: %s", frame.toString().c_str());
-
-    return frame;
-}
-#endif // SIMULATE_GPIO_BEHAVIOR

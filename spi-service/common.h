@@ -36,7 +36,7 @@ inline void log_print(LogLevel level, const char* tag, const char* fmt, ...) {
     fprintf(out, "\n");
     va_end(args);
 }
-
+#if 0
 // // Convert an arbitrary byte sequence to a hex string (uppercase, space-separated)
 inline std::string bytesToHexString(const uint8_t* data, size_t len,  size_t maxLen = SIZE_MAX) {
     if (len == 0) return {};
@@ -86,3 +86,4 @@ inline uint8_t getByteAt(const std::vector<uint8_t>& data, size_t index) {
     }
     return data[index];
 }
+#endif

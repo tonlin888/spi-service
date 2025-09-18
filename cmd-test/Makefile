@@ -1,40 +1,19 @@
-#
-# OpenWrt package for cmd-test
-#
+TARGET = cmd-test
 
-include $(TOPDIR)/rules.mk
+OBJS = cmd-test.o
 
-PKG_NAME:=cmd-test
-PKG_VERSION:=1.0
-PKG_RELEASE:=1
+EXTRA_CFLAGS += -I../common
 
-PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)
+all: $(TARGET)
 
-include $(INCLUDE_DIR)/package.mk
+$(TARGET): $(OBJS)
+	$(CC) $(LDFLAGS) -o $@ $(OBJS)
 
-define Package/cmd-test
-  SECTION:=utils
-  CATEGORY:=Utilities
-  TITLE:=Command Test Client for IPCManager
-  DEPENDS:=+libstdcpp
-endef
+%.o: %.c
+	$(CC) $(CFLAGS) $(EXTRA_CFLAGS) $(CFLAGS_$@) -c -o $@ $<
 
-define Package/cmd-test/description
-  A small command line tool to test SPI IPC manager on OpenWrt.
-endef
+install: all
+	install -m 755 $(TARGET) $(ROOT_FS)/bin
 
-define Build/Prepare
-	mkdir -p $(PKG_BUILD_DIR)
-	$(CP) ./src/* $(PKG_BUILD_DIR)/
-endef
-
-define Build/Compile
-	$(TARGET_CXX) -o $(PKG_BUILD_DIR)/cmd-test $(PKG_BUILD_DIR)/cmd-test.cpp
-endef
-
-define Package/cmd-test/install
-	$(INSTALL_DIR) $(1)/usr/bin
-	$(INSTALL_BIN) $(PKG_BUILD_DIR)/cmd-test $(1)/usr/bin/
-endef
-
-$(eval $(call BuildPackage,cmd-test))
+clean:
+	rm -f $(TARGET) *.o

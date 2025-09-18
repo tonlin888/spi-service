@@ -11,9 +11,6 @@
 // SPI Frame: DIR(1 byte) + SEQ(2 bytes) + CMD(1 byte) + LEN(2 bytes) + PAYLOAD + CHECKSUM(2 bytes)
 class SpiFrame {
 public:
-    //static constexpr size_t MAX_FRAME_SIZE = 128; // MAX_FRAME_SIZE = 6(header)+MAX_PAYLOAD+2(checksum)
-    //static constexpr size_t MAX_PAYLOAD = 120;
-
     // defined in SPI_format_V3.pptx
     enum class Direction : uint8_t {
         MCU2SOC = 0x55,
@@ -58,6 +55,9 @@ public:
             );
             payload_.assign(full_payload.begin() + offset_,
                             full_payload.begin() + offset_ + payload_len_);
+            if (payload_.size() < SpiCommon::MAX_SPI_PAYLOAD_SIZE) {
+                payload_.resize(SpiCommon::MAX_SPI_PAYLOAD_SIZE, 0);
+            }
             valid_ = (payload_len_ > 0);
         }
 
@@ -66,8 +66,8 @@ public:
     }
 
     bool parse(const std::vector<uint8_t>& buf) {
-        if (buf.size() < 8) { // header(6) + checksum(2)
-            LOGW("parse, buf.size() < 8");
+        if (buf.size() < SpiCommon::MAX_SPI_FRAME_SIZE) { // buffer size must be 128 bytes
+            LOGW("parse, buf.size()=%u < %u", buf.size(), SpiCommon::MAX_SPI_FRAME_SIZE);
             return false;
         }
 
@@ -86,9 +86,9 @@ public:
             return false;
         }
 
-        payload_.assign(buf.begin() + 6, buf.begin() + 6 + payload_len_);
-        uint16_t recv_checksum = buf[6 + payload_len_] | (buf[7 + payload_len_] << 8);
+        payload_.assign(buf.begin() + 6, buf.begin() + 6 + SpiCommon::MAX_SPI_PAYLOAD_SIZE);
 
+        uint16_t recv_checksum = buf[SpiCommon::MAX_SPI_FRAME_SIZE - 2] | (buf[SpiCommon::MAX_SPI_FRAME_SIZE - 1] << 8);
         checksum_ = recv_checksum;
         valid_ = (recv_checksum == computeChecksum());
 
@@ -132,41 +132,32 @@ public:
 
     // output debug string
     std::string toString() const {
-        return bytesToHexString(toBytes());
+        return SpiCommon::bytesToHexString(toBytes());
+    }
+
+    std::vector<uint8_t> get_effective_payload() const {
+        return std::vector<uint8_t>(payload_.begin(), payload_.begin() + payload_len_);
     }
 
 private:
-    // Constructor: private, initialize directly with payload (avoids extra copy from fromBytes)
-    SpiFrame(Direction direction,
-             uint16_t seq_id,
-             Command cmd_id,
-             const std::vector<uint8_t>& payload,
-             uint16_t checksum,
-             size_t offset,
-             bool valid)
-        : direction_(direction), seq_id_(seq_id), cmd_id_(cmd_id),
-          payload_len_(static_cast<uint16_t>(payload.size())), payload_(payload),
-          checksum_(checksum), offset_(offset), valid_(valid)
-    {
-        next_ = offset_ + payload_len_;
-    }
 
+    // sum of all bytes in 16-bit Little Endian words
     uint16_t computeChecksum() const {
         uint32_t sum = 0;
-
-        sum += static_cast<uint8_t>(direction_);
-        sum += seq_id_ & 0xFF;
-        sum += (seq_id_ >> 8) & 0xFF;
-        sum += static_cast<uint8_t>(cmd_id_);
-        sum += payload_len_ & 0xFF;
-        sum += (payload_len_ >> 8) & 0xFF;
-
-        for (auto b : payload_) {
-            sum += b;
+        size_t i = 0;
+    
+        sum += static_cast<uint16_t>(static_cast<uint8_t>(direction_) | ((seq_id_ & 0xFF) << 8));
+        sum += static_cast<uint16_t>(((seq_id_ >> 8) & 0xFF) | (static_cast<uint8_t>(cmd_id_) << 8));
+        sum += static_cast<uint16_t>((payload_len_ & 0xFF) | ((payload_len_ >> 8) << 8));
+        for (i = 0; i + 1 < payload_.size(); i += 2) {
+            sum += static_cast<uint16_t>(payload_[i] | (payload_[i + 1] << 8));
         }
-
+        if (i < payload_.size()) {
+            sum += static_cast<uint16_t>(payload_[i]);
+        }
+    
         return static_cast<uint16_t>(sum & 0xFFFF);
     }
-    size_t offset_;
 
+    size_t offset_;
 };

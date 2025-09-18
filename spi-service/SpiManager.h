@@ -6,9 +6,6 @@
 #include "SpiFrame.h"
 #include "SeqMapper.h"
 
-#define SIMULATE_GPIO_BEHAVIOR 1
-#define ENABLE_SYNCHRONIZED_READ 1
-
 // SPI Frame format:
 // DIRECTION (1 byte): MCU->SOC: 0x55, SOC->MCU: 0xAA
 // SEQ_ID (2 bytes)
@@ -45,7 +42,7 @@ private:
     int epoll_fd_; // epoll file descriptor
     int gpio_fd_;  // GPIO file descriptor
 
-    int spi_transfer(const uint8_t* tx_buf, uint8_t* rx_buf, size_t len);
+    int spi_transfer(const uint8_t* tx_buf, uint8_t* rx_buf, size_t len, bool sync = true);
     int wait_gpio_interrupt();
     uint8_t check_gpio_level_and_notify(uint8_t &last_level);
     void gpioMonitorThread(); // GPIO monitoring thread function
@@ -53,17 +50,4 @@ private:
     bool isSpiReadRequired(uint8_t gpio_level);
     std::optional<Packet> gen_ipc_packet(const SpiFrame& spi_frame);
     std::pair<uint16_t, SpiFrame::Command> get_spi_frame_params(const IPCData& ipc);
-
-#ifdef SIMULATE_GPIO_BEHAVIOR
-    // Mock GPIO for simulation
-    static constexpr const char* MOCK_GPIO_PATH = "/tmp/gpio502";
-    int inotify_fd_;
-    int watch_fd_;
-    int gpio_fd2_;  // GPIO file descriptor for mock
-    std::thread gpio_thread2_; // Mock GPIO monitoring thread
-    bool init_mock_gpio();
-    uint8_t check_mock_gpio_level_and_notify(uint8_t &last_level);
-    void mockGpioThread();
-    SpiFrame makeTestSpiFrame(uint16_t seq_id); // Generate test SPI frame
-#endif
 };
