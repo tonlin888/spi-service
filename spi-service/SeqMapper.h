@@ -28,6 +28,7 @@ public:
     uint16_t add_mapping(uint16_t seq, int client_fd, SpiCommon::McuCommand cmd = SpiCommon::McuCommand::SUB_CMD_INVALID) {
         std::lock_guard<std::mutex> lock(mu_);
         uint16_t mapped_seq = next_mapped_seq_++;
+        if (next_mapped_seq_ == 0) next_mapped_seq_ = 1;
 
         // Remove the oldest if exceeding MAX_ENTRIES
         if (mapped_to_entry_.size() >= MAX_ENTRIES) {
@@ -100,6 +101,21 @@ public:
             }
         }
         return removed;
+    }
+
+    // If mapping exists and client_fd == -1, update to new_id
+    bool update_client_if_unset(uint16_t mapped_seq, int new_id) {
+        if (mapped_seq > 0) {
+            std::lock_guard<std::mutex> lock(mu_);
+            auto it = mapped_to_entry_.find(mapped_seq);
+            if (it != mapped_to_entry_.end() && it->second.client_fd == -1) {
+                it->second.client_fd = new_id;
+                LOGI("update_client_if_unset, mapped_seq=%u updated client_fd=%d",
+                    mapped_seq, new_id);
+                return true;
+            }
+        }
+        return false;
     }
 
     // Get the number of current mappings

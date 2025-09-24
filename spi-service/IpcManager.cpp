@@ -292,10 +292,11 @@ void IpcManager::send_ipc_to_clients(const IPCData& ipc) {
             return;
         }
 
-        uint16_t seq = (ipc.seq >= 0) ? ipc.seq : seq_;
+        uint16_t seq = (ipc.seq > 0) ? ipc.seq : seq_;
         std::vector<uint8_t> msg = ClientMessage(seq, MsgType::NOTIFY, ErrorCode::NONE, ipc.data).toBytes();
         for (int fd : it->second) {
             ssize_t n = send(fd, msg.data(), msg.size(), 0);
+            seq_mapper_.update_client_if_unset(ipc.seq, fd);
             if (n < 0) {
                 LOGE("Failed to send to client fd=%d: %s", fd, strerror(errno));
             } else {

@@ -71,16 +71,15 @@ enum class MsgType : uint8_t {
                             // registration to route incoming MCU messages to the appropriate client handler.
     UNREGISTER_REQ = 0x11,  // Remove client from notification list (expects a response from SPI Service with the same SEQ_ID)
 
-    // SOC <--> MCU
+    // Client --> SPI Service ---> MCU
     EXECUTE_REQ    = 0x20,  // Request the other side to execute an action (expects a response from MCU with the same SEQ_ID)
     SET_REQ        = 0x21,  // Request the other side to execute an action (no response required)
 
-    // MCU <--> SOC
-    // SPI Service --> SOC
+    // Client <--- SPI Service <--- MCU
+    // Client <--- SPI Service
     RESPONSE       = 0x22,  // Response to a request (success / error / data)
-                            // DATA field format: Error Code + Data
 
-    // MCU <-- SOC
+    // Client <--- SPI Service <-- MCU
     NOTIFY         = 0x23,  // One-way notification, no response required
 };
 
@@ -216,7 +215,6 @@ inline uint16_t calcChecksum(const uint8_t* buf, size_t len) {
     if (i < len) {
         sum += buf[i];
     }
-
     return static_cast<uint16_t>(sum & 0xFFFF);
 }
 
@@ -224,7 +222,7 @@ inline uint16_t calcChecksum(const uint8_t* buf, size_t len) {
 inline std::vector<uint8_t> packMessage(uint16_t seq,
                                         MsgType msg_type,
                                         ErrorCode err,
-                                        const std::vector<uint8_t>& data) 
+                                        const std::vector<uint8_t>& data)
 {
     std::vector<uint8_t> buf;
 
@@ -239,18 +237,12 @@ inline std::vector<uint8_t> packMessage(uint16_t seq,
     buf.push_back(static_cast<uint8_t>(err));
 
     // LEN: 2 bytes, little endian
-    uint16_t payload_len = static_cast<uint16_t>(std::min<size_t>(data.size(), SpiCommon::MAX_SPI_PAYLOAD_SIZE));
-    if (data.size() > SpiCommon::MAX_SPI_PAYLOAD_SIZE) {
-        throw std::runtime_error(
-            "packMessage: payload too large (" + std::to_string(data.size()) +
-            "), max allowed is " + std::to_string(SpiCommon::MAX_SPI_PAYLOAD_SIZE)
-        );
-    }
+    uint16_t payload_len = static_cast<uint16_t>(data.size());
     buf.push_back(static_cast<uint8_t>(payload_len & 0xFF));
     buf.push_back(static_cast<uint8_t>((payload_len >> 8) & 0xFF));
 
-    // DATA: copy up to payload_len
-    buf.insert(buf.end(), data.begin(), data.begin() + payload_len);
+    // DATA: variable length
+    buf.insert(buf.end(), data.begin(), data.end());
 
     // CHECKSUM: 2 bytes, sum of all previous bytes
     uint16_t checksum = calcChecksum(buf.data(), buf.size());
@@ -261,7 +253,7 @@ inline std::vector<uint8_t> packMessage(uint16_t seq,
 }
 
 inline bool unpackMessage(const std::vector<uint8_t>& buf, Message& msg_out) {
-    if (buf.size() < (HEADER_SIZE + TAIL_SIZE)) return false; 
+    if (buf.size() < (HEADER_SIZE + TAIL_SIZE)) return false;
 
     size_t offset = 0;
 

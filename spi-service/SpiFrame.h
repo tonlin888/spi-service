@@ -11,6 +11,9 @@
 // SPI Frame: DIR(1 byte) + SEQ(2 bytes) + CMD(1 byte) + LEN(2 bytes) + PAYLOAD + CHECKSUM(2 bytes)
 class SpiFrame {
 public:
+    static constexpr uint8_t MCU_ACK_SUCCESS = 0x00;
+    static constexpr uint8_t MCU_ACK_FAIL = 0x01;
+
     // defined in SPI_format_V3.pptx
     enum class Direction : uint8_t {
         MCU2SOC = 0x55,
@@ -109,6 +112,16 @@ public:
         return frame;
     }
 
+    static std::optional<SpiFrame> fromBytes(const uint8_t* buf, size_t size) {
+        if (!buf || size == 0) {
+            LOGW("fromBytes, invalid buffer");
+            return std::nullopt;
+        }
+
+        std::vector<uint8_t> vec(buf, buf + size);
+        return fromBytes(vec);
+    }
+
     // convert SpiFrame to bytes
     std::vector<uint8_t> toBytes() const {
         std::vector<uint8_t> out;
@@ -139,8 +152,34 @@ public:
         return std::vector<uint8_t>(payload_.begin(), payload_.begin() + payload_len_);
     }
 
-private:
+    bool is_ack_success() const {
+        return !payload_.empty() && payload_[0] == MCU_ACK_SUCCESS;
+    }
 
+    static bool is_ack_success(const uint8_t* buf, size_t len) {
+        if (!buf || len < 7) { // dir(1)+seq(2)+cmd(1)+len(2)+payload(1)
+            return false;
+        }
+        return buf[6] == MCU_ACK_SUCCESS;
+    }
+
+    static uint16_t get_seq_id(const uint8_t* buf, size_t len) {
+        if (!buf || len < 3) { 
+            LOGE("get_seq_id, invalid buffer!");
+            return -1;
+        }
+        return static_cast<uint16_t>((buf[1]) | (static_cast<uint16_t>(buf[2]) << 8));
+    }
+    
+    static Command get_cmd_id(const uint8_t* buf, size_t len) {
+        if (!buf || len < 4) {
+            LOGE("get_cmd_id, invalid buffer!");
+            return Command::UNKNOWN_CMD;
+        }
+        return static_cast<Command>(buf[3]);
+    }
+
+private:
     // sum of all bytes in 16-bit Little Endian words
     uint16_t computeChecksum() const {
         uint32_t sum = 0;
@@ -155,7 +194,7 @@ private:
         if (i < payload_.size()) {
             sum += static_cast<uint16_t>(payload_[i]);
         }
-    
+
         return static_cast<uint16_t>(sum & 0xFFFF);
     }
 

@@ -1,7 +1,7 @@
 CXX := g++
 CXXFLAGS := -std=c++17 -O2 -Wall -pthread
 
-SRCS := main.cpp IpcManager.cpp SpiManager.cpp
+SRCS := main.cpp IpcManager.cpp SpiManager.cpp SpiDev.cpp
 OBJS := $(SRCS:.cpp=.o)
 
 spi-service: $(OBJS)
