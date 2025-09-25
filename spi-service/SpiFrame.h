@@ -184,7 +184,6 @@ private:
 
     // sum of all word in 16-bit Little Endian words
     uint16_t calcChecksum() const {
-        std::vector<uint8_t> toBytes() const {
         std::vector<uint8_t> buf;
     
         // direction_ (1 byte)
@@ -194,9 +193,8 @@ private:
         buf.push_back(static_cast<uint8_t>(seq_id_ & 0xFF));
         buf.push_back(static_cast<uint8_t>((seq_id_ >> 8) & 0xFF));
     
-        // cmd_id_ (2 bytes, little endian)
-        buf.push_back(static_cast<uint8_t>(cmd_id_ & 0xFF));
-        buf.push_back(static_cast<uint8_t>((cmd_id_ >> 8) & 0xFF));
+        // cmd_id_ (1 bytes)
+        buf.push_back(static_cast<uint8_t>(cmd_id_));
     
         // payload_len_ (2 bytes, little endian)
         buf.push_back(static_cast<uint8_t>(payload_len_ & 0xFF));
