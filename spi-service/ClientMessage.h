@@ -78,7 +78,7 @@ public:
                    (static_cast<uint16_t>(buf[cs_offset + 1]) << 8);
 
         // Verify checksum
-        uint16_t calc = calcChecksum(buf, HEADER_SIZE + len_);
+        uint16_t calc = SpiCommon::calcChecksum(buf, HEADER_SIZE + len_);
         if (checksum_ != calc) {
             LOGE("parse, checksum mismatch: got=0x%04X, calc=0x%04X",
                  checksum_, calc);
@@ -88,38 +88,27 @@ public:
         return true;
     }
 
-    // 16-bit sum of all bytes
-    static uint16_t calcChecksum(const uint8_t* buf, size_t len) {
-        uint32_t sum = 0;
-        for (size_t i = 0; i < len; i++) {
-            sum += buf[i];
-        }
-        return static_cast<uint16_t>(sum & 0xFFFF);
-    }
-
     uint16_t calcChecksum() const {
-        uint32_t sum = 0;
+        std::vector<uint8_t> buf;
 
-        // SEQ (2 bytes, little endian)
-        sum += seq_ & 0xFF;
-        sum += (seq_ >> 8) & 0xFF;
+        // seq_ (2 bytes, little endian)
+        buf.push_back(static_cast<uint8_t>(seq_ & 0xFF));
+        buf.push_back(static_cast<uint8_t>((seq_ >> 8) & 0xFF));
+    
+        // msg_t_ (1 byte)
+        buf.push_back(static_cast<uint8_t>(msg_t_));
+    
+        // err_ (1 byte)
+        buf.push_back(static_cast<uint8_t>(err_));
+    
+        // len_ (2 bytes, little endian)
+        buf.push_back(static_cast<uint8_t>(len_ & 0xFF));
+        buf.push_back(static_cast<uint8_t>((len_ >> 8) & 0xFF));
+    
+        // data_
+        buf.insert(buf.end(), data_.begin(), data_.end());
 
-        // MSG_TYPE (1 byte)
-        sum += static_cast<uint8_t>(msg_t_);
-
-        // ERROR_CODE (1 byte)
-        sum += static_cast<uint8_t>(err_);
-
-        // LEN (2 bytes, little endian)
-        sum += len_ & 0xFF;
-        sum += (len_ >> 8) & 0xFF;
-
-        // DATA (N bytes)
-        for (auto b : data_) {
-            sum += b;
-        }
-
-        return static_cast<uint16_t>(sum & 0xFFFF);
+        return SpiCommon::calcChecksum(buf.data(), buf.size());
     }
 
     static std::optional<ClientMessage> fromBytes(const uint8_t* buf, size_t n) {
@@ -170,6 +159,14 @@ public:
     }
 
     bool is_valid() const { return valid_; }
+
+    static uint16_t get_seq_id(const uint8_t* buf, size_t len) {
+        if (!buf || len < 2) { 
+            LOGE("get_seq_id, invalid buffer!");
+            return SpiCommon::INVALID_SEQ_ID;
+        }
+        return static_cast<uint16_t>((buf[0]) | (static_cast<uint16_t>(buf[1]) << 8));
+    }
 
     std::string toString() const {
         std::ostringstream oss;

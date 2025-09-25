@@ -65,7 +65,7 @@ public:
         }
 
         next_ = offset_ + payload_len_;
-        checksum_ = computeChecksum();
+        checksum_ = calcChecksum();
     }
 
     bool parse(const std::vector<uint8_t>& buf) {
@@ -93,7 +93,7 @@ public:
 
         uint16_t recv_checksum = buf[SpiCommon::MAX_SPI_FRAME_SIZE - 2] | (buf[SpiCommon::MAX_SPI_FRAME_SIZE - 1] << 8);
         checksum_ = recv_checksum;
-        valid_ = (recv_checksum == computeChecksum());
+        valid_ = (recv_checksum == calcChecksum());
 
         if (!valid_) {
             LOGW("parse, checksum mismatch");
@@ -166,7 +166,7 @@ public:
     static uint16_t get_seq_id(const uint8_t* buf, size_t len) {
         if (!buf || len < 3) { 
             LOGE("get_seq_id, invalid buffer!");
-            return -1;
+            return SpiCommon::INVALID_SEQ_ID;
         }
         return static_cast<uint16_t>((buf[1]) | (static_cast<uint16_t>(buf[2]) << 8));
     }
@@ -180,23 +180,31 @@ public:
     }
 
 private:
-    // sum of all bytes in 16-bit Little Endian words
-    uint16_t computeChecksum() const {
-        uint32_t sum = 0;
-        size_t i = 0;
-    
-        sum += static_cast<uint16_t>(static_cast<uint8_t>(direction_) | ((seq_id_ & 0xFF) << 8));
-        sum += static_cast<uint16_t>(((seq_id_ >> 8) & 0xFF) | (static_cast<uint8_t>(cmd_id_) << 8));
-        sum += static_cast<uint16_t>((payload_len_ & 0xFF) | ((payload_len_ >> 8) << 8));
-        for (i = 0; i + 1 < payload_.size(); i += 2) {
-            sum += static_cast<uint16_t>(payload_[i] | (payload_[i + 1] << 8));
-        }
-        if (i < payload_.size()) {
-            sum += static_cast<uint16_t>(payload_[i]);
-        }
-
-        return static_cast<uint16_t>(sum & 0xFFFF);
-    }
-
     size_t offset_;
+
+    // sum of all word in 16-bit Little Endian words
+    uint16_t calcChecksum() const {
+        std::vector<uint8_t> toBytes() const {
+        std::vector<uint8_t> buf;
+    
+        // direction_ (1 byte)
+        buf.push_back(static_cast<uint8_t>(direction_));
+    
+        // seq_id_ (2 bytes, little endian)
+        buf.push_back(static_cast<uint8_t>(seq_id_ & 0xFF));
+        buf.push_back(static_cast<uint8_t>((seq_id_ >> 8) & 0xFF));
+    
+        // cmd_id_ (2 bytes, little endian)
+        buf.push_back(static_cast<uint8_t>(cmd_id_ & 0xFF));
+        buf.push_back(static_cast<uint8_t>((cmd_id_ >> 8) & 0xFF));
+    
+        // payload_len_ (2 bytes, little endian)
+        buf.push_back(static_cast<uint8_t>(payload_len_ & 0xFF));
+        buf.push_back(static_cast<uint8_t>((payload_len_ >> 8) & 0xFF));
+    
+        // payload_
+        buf.insert(buf.end(), payload_.begin(), payload_.end());
+        
+        return SpiCommon::calcChecksum(buf.data(), buf.size());
+    }
 };

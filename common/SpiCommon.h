@@ -47,12 +47,14 @@
 namespace SpiCommon {
 
 // ========== Constants ==========
-static constexpr size_t MAX_IPC_PACKET_SIZE = 512;  // Maximum IPC packet length
-static constexpr size_t MAX_IPC_DATA_SIZE = 120;    // Maximum IPC payload size
-static constexpr size_t MAX_SPI_FRAME_SIZE = 128;   // SPI frame length = header(6 bytes) + MAX_PAYLOAD + checksum(2 bytes)
-static constexpr size_t MAX_SPI_PAYLOAD_SIZE = 120; // Maximum SPI frame payload size
-static constexpr size_t HEADER_SIZE = 6;            // SEQ(2) + MSG_TYPE(1) + ERR(1) + LEN(2)
-static constexpr size_t TAIL_SIZE   = 2;            // checksum(2)
+static constexpr size_t MAX_IPC_PACKET_SIZE = 512;      // Maximum IPC packet length
+static constexpr size_t MAX_IPC_DATA_SIZE = 120;        // Maximum IPC payload size
+static constexpr size_t MAX_SPI_FRAME_SIZE = 128;       // SPI frame length = header(6 bytes) + MAX_PAYLOAD + checksum(2 bytes)
+static constexpr size_t MAX_SPI_PAYLOAD_SIZE = 120;     // Maximum SPI frame payload size
+static constexpr size_t HEADER_SIZE = 6;                // SEQ(2) + MSG_TYPE(1) + ERR(1) + LEN(2)
+static constexpr size_t TAIL_SIZE   = 2;                // checksum(2)
+
+static constexpr uint16_t INVALID_SEQ_ID = 0;           // invalid sequence id
 
 static constexpr const char* IPC_SOCKET_PATH = "/tmp/spi-service/ipc.sock";
 
@@ -202,7 +204,7 @@ inline std::string msgToHexString(const uint8_t* buf, size_t len) {
     return oss.str();
 }
 
-// sum of all bytes in 16-bit Little Endian words
+// sum of all word in 16-bit Little Endian words
 inline uint16_t calcChecksum(const uint8_t* buf, size_t len) {
     uint32_t sum = 0;
     size_t i = 0;

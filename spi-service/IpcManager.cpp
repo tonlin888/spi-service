@@ -135,10 +135,10 @@ void IpcManager::process_cmd(int client_fd, const ClientMessage& msg) {
 }
 
 void IpcManager::process_message(int client_fd, const uint8_t* buf, size_t n) {
-    auto msg_opt = ClientMessage::fromBytes(buf, static_cast<size_t>(n));
+    auto msg_opt = ClientMessage::fromBytes(buf, n);
     if (!msg_opt) {
         LOGW("Invalid ClientMessage received");
-        send_response(client_fd, ClientMessage(0, MsgType::RESPONSE, ErrorCode::INVALID_FORMAT));
+        send_response(client_fd, ClientMessage(ClientMessage::get_seq_id(buf, n), MsgType::RESPONSE, ErrorCode::INVALID_FORMAT));
         return;
     }
 
