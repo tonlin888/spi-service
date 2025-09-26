@@ -38,6 +38,11 @@ public:
     void stop();
 
 private:
+    enum class CmdMapAction : uint8_t {
+        REGISTER,
+        UNREGISTER,
+    };
+
     std::atomic<bool> running_;
     std::thread ipc_tx_thread_;
     std::thread ipc_rx_thread_;
@@ -60,6 +65,7 @@ private:
     void send_response(int client_fd, const ClientMessage& msg);
     void process_cmd(int client_fd, const ClientMessage& msg);
     void process_message(int client_fd, const uint8_t* buf, size_t n);
+    int process_cmd_bytes(int client_fd, const std::vector<uint8_t>& buf, CmdMapAction act);
     void register_cmd(int client_fd, uint16_t cmd_id);
     void unregister_cmd(int client_fd, uint16_t cmd_id);
     void unsubscribe_client(int client_fd);

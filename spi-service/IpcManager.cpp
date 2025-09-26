@@ -96,41 +96,67 @@ void IpcManager::accept_client() {
     LOGI("Client connected fd=%d", client_fd);
 }
 
+// Process raw bytes into commands (register or unregister)
+int IpcManager::process_cmd_bytes(int client_fd, const std::vector<uint8_t>& buf, IpcManager::CmdMapAction act) {
+    // Must be even size, because each command is uint16_t (little endian)
+    if (buf.size() % 2 != 0) {
+        LOGE("Invalid buffer size=%zu (must be even)!", buf.size());
+        return -1;
+    }
+
+    // Parse each 16-bit value
+    for (size_t i = 0; i < buf.size(); i += 2) {
+        uint16_t val = static_cast<uint16_t>(buf[i]) | (static_cast<uint16_t>(buf[i + 1]) << 8);
+
+        int group = static_cast<int>(val) - SpiCommon::CMD_GROUP_ID_BASE;
+        if (group >= 0 && group < static_cast<int>(SpiCommon::CMD_GROUP.size())) {
+            LOGI("process_cmd_bytes, value 0x%04X matched group %d", val, group);
+            for (uint16_t gval : SpiCommon::CMD_GROUP[group]) {
+                if (act == CmdMapAction::REGISTER) {
+                    LOGI("process_cmd_bytes, Register command 0x%04X", gval);
+                    register_cmd(client_fd, gval);
+                } else if (act == CmdMapAction::UNREGISTER){
+                    LOGI("process_cmd_bytes, Unregister command 0x%04X", gval);
+                    unregister_cmd(client_fd, gval);
+                }
+            }
+        } else {
+            if (act == CmdMapAction::REGISTER) {
+                LOGI("process_cmd_bytes, Register command 0x%04X", val);
+                register_cmd(client_fd, val);
+            } else if (act == CmdMapAction::UNREGISTER) {
+                LOGI("process_cmd_bytes, Unregister command 0x%04X", val);
+                unregister_cmd(client_fd, val);
+            }
+        }
+    }
+    return 0;
+}
+
 void IpcManager::process_cmd(int client_fd, const ClientMessage& msg) {
     Packet pkt;
     switch (static_cast<uint8_t>(msg.msg_t_)) {
         case static_cast<uint8_t>(MsgType::REGISTER_REQ):
-            LOGI("process_cmd, REGISTER_REQ");
-
+            LOGI("process REGISTER_REQ ...");
             unsubscribe_client(client_fd);
-            for (uint8_t r : msg.data_) {
-                register_cmd(client_fd, r);
-            }
+            process_cmd_bytes(client_fd, msg.data_, CmdMapAction::REGISTER);
             send_response(client_fd, ClientMessage(msg.seq_, MsgType::RESPONSE, ErrorCode::NONE));
             break;
 
         case static_cast<uint8_t>(MsgType::UNREGISTER_REQ):
-            LOGI("process_cmd, UNREGISTER_REQ");
-            for (uint8_t r : msg.data_) {
-                unregister_cmd(client_fd, r);
-            }
+            LOGI("process UNREGISTER_REQ ...");
+            process_cmd_bytes(client_fd, msg.data_, CmdMapAction::UNREGISTER);
             send_response(client_fd, ClientMessage(msg.seq_, MsgType::RESPONSE, ErrorCode::NONE));
             break;
 
-        case static_cast<uint8_t>(MsgType::EXECUTE_REQ):
-            LOGI("process_cmd, EXECUTE_REQ");
-            LOGI("Push IPC Packet, size=%u", msg.data_.size());
-            tx_queue_.push(Packet{PacketSource::IPC, IPCData{client_fd, MessageFlow::EXECUTE, msg.seq_, msg.data_}});
-            break;
-
+        case static_cast<uint8_t>(MsgType::EXECUTE_REQ): // pass through
         case static_cast<uint8_t>(MsgType::SET_REQ):
-            LOGI("process_cmd, SET_REQ");
-            LOGI("Push IPC Packet, size=%u", msg.data_.size());
-            tx_queue_.push(Packet{PacketSource::IPC, IPCData{client_fd, MessageFlow::SET, msg.seq_, msg.data_}});
+            LOGI("process %s size=%u. push IPC packet ...", MsgTypeToStr(msg.msg_t_).c_str(), msg.data_.size());
+            tx_queue_.push(Packet{PacketSource::IPC, IPCData{client_fd, msg.msg_t_, msg.seq_, msg.data_}});
             break;
 
         default:
-            LOGE("process_cmd, unknown command");
+            LOGE("process unknown command!");
     }
 }
 
@@ -285,7 +311,7 @@ void IpcManager::send_ipc_to_clients(const IPCData& ipc) {
         return;
     }
 
-    if (ipc.flow == MessageFlow::NOTIFY) {
+    if (ipc.typ == MsgType::NOTIFY) {
         auto it = cmd_map_.find(cmd_id);
         if (it == cmd_map_.end()) {
             LOGW("No clients registered for cmd_id=0x%04X", cmd_id);
@@ -298,20 +324,20 @@ void IpcManager::send_ipc_to_clients(const IPCData& ipc) {
             ssize_t n = send(fd, msg.data(), msg.size(), 0);
             seq_mapper_.update_client_if_unset(ipc.seq, fd);
             if (n < 0) {
-                LOGE("Failed to send to client fd=%d: %s", fd, strerror(errno));
+                LOGE("Failed to send to client fd=%d: %s!", fd, strerror(errno));
             } else {
                 LOGI("Sent %zd bytes to client fd=%d for cmd_id=0x%04X, %s", n, fd, cmd_id, SpiCommon::bytesToHexString(msg).c_str());
             }
         }
-    } else if (ipc.flow == MessageFlow::RESPONSE) {
+    } else if (ipc.typ == MsgType::RESPONSE) {
         std::vector<uint8_t> msg = ClientMessage(ipc.seq, MsgType::RESPONSE, ErrorCode::NONE, ipc.data).toBytes();
         ssize_t n = send(ipc.client_fd, msg.data(), msg.size(), 0);
         if (n < 0) {
-            LOGE("Failed to send to client fd=%d: %s", ipc.client_fd, strerror(errno));
+            LOGE("Failed to send to client fd=%d: %s!", ipc.client_fd, strerror(errno));
         } else {
             LOGI("Sent %zd bytes to client fd=%d for cmd_id=0x%04X, %s", n, ipc.client_fd, cmd_id, SpiCommon::bytesToHexString(msg).c_str());
         }
     } else {
-        LOGE("Unknown message flow %d", ipc.flow);
+        LOGE("Unknown message type %d!", ipc.typ);
     }
 }

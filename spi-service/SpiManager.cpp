@@ -17,6 +17,7 @@
 
 using Direction = SpiFrame::Direction;
 using Command = SpiFrame::Command;
+using MsgType = SpiCommon::MsgType;
 
 SpiManager::SpiManager(MessageQueue<Packet>& tx_mq, MessageQueue<Packet>& rx_mq, SeqMapper& seq_mapper)
     : tx_queue_(tx_mq),
@@ -131,13 +132,13 @@ std::optional<Packet> SpiManager::gen_ipc_packet(const SpiFrame& spi_frame) {
     switch (spi_frame.cmd_id_) {
         case Command::WRITE_UNREL:
         case Command::WRITE: {
-            LOGI("Command::%s",
+            LOGI("generate IPC message from Command::%s",
                  spi_frame.cmd_id_ == Command::WRITE ? "WRITE" : "WRITE_UNREL");
 
             // Broadcast to all clients
             pkt_rx.payload = IPCData{
                 -1,
-                MessageFlow::NOTIFY,
+                MsgType::NOTIFY,
                 spi_frame.seq_id_,
                 spi_frame.get_effective_payload()
             };
@@ -146,7 +147,7 @@ std::optional<Packet> SpiManager::gen_ipc_packet(const SpiFrame& spi_frame) {
 
         case Command::READ_UNREL:
         case Command::READ: {
-            LOGI("Command::%s",
+            LOGI("generate IPC message from Command::%s",
                  spi_frame.cmd_id_ == Command::READ ? "READ" : "READ_UNREL");
 
             uint16_t mcu_cmd = static_cast<uint16_t>(spi_frame.payload_[0]) |
@@ -159,7 +160,7 @@ std::optional<Packet> SpiManager::gen_ipc_packet(const SpiFrame& spi_frame) {
             // Broadcast to all clients
             pkt_rx.payload = IPCData{
                 -1,
-                MessageFlow::NOTIFY,
+                MsgType::NOTIFY,
                 seq_id,
                 spi_frame.get_effective_payload()
             };
@@ -167,7 +168,7 @@ std::optional<Packet> SpiManager::gen_ipc_packet(const SpiFrame& spi_frame) {
         }
 
         case Command::RESPONSE: {
-            LOGI("Command::RESPONSE");
+            LOGI("generate IPC message from Command::RESPONSE");
 
             SeqMapper::Entry entry;
             seq_mapper_.find_mapping(spi_frame.seq_id_, entry);
@@ -182,7 +183,7 @@ std::optional<Packet> SpiManager::gen_ipc_packet(const SpiFrame& spi_frame) {
 
             pkt_rx.payload = IPCData{
                 entry.client_fd,
-                MessageFlow::RESPONSE,
+                MsgType::RESPONSE,
                 entry.seq,
                 spi_frame.get_effective_payload()
             };
@@ -197,6 +198,7 @@ std::optional<Packet> SpiManager::gen_ipc_packet(const SpiFrame& spi_frame) {
 }
 
 // The "unreliable" command is not necessary.
+//#define RUN_UNRELIABLE_MODE 1
 std::optional<SpiFrame> SpiManager::gen_spi_frame(const IPCData& ipc) {
     uint16_t mcu_cmd = static_cast<uint16_t>(ipc.data[0]) |
                        (static_cast<uint16_t>(ipc.data[1]) << 8);
@@ -204,19 +206,24 @@ std::optional<SpiFrame> SpiManager::gen_spi_frame(const IPCData& ipc) {
     uint16_t seq_id = 0;
     Command cmd = Command::UNKNOWN_CMD;
 
-    switch (ipc.flow) {
-        case MessageFlow::EXECUTE: {
-            LOGI("MessageFlow::EXECUTE");
+    switch (ipc.typ) {
+        case MsgType::EXECUTE_REQ: {
+            LOGI("generate SPI frame from EXECUTE_REQ");
             // Create a new mapping: IPC seq -> MCU seq
             seq_id = seq_mapper_.add_mapping(
                 ipc.seq, ipc.client_fd,
                 static_cast<SpiCommon::McuCommand>(mcu_cmd));
+#if defined(RUN_UNRELIABLE_MODE)
+            cmd = Command::READ_UNREL;
+#else
             cmd = Command::READ;
+#endif
+
             break;
         }
 
-        case MessageFlow::SET: {
-            LOGI("MessageFlow::SET");
+        case MsgType::SET_REQ: {
+            LOGI("generate SPI frame from SET_REQ");
             SeqMapper::Entry entry;
             seq_mapper_.find_mapping(ipc.seq, entry);
 
@@ -227,13 +234,18 @@ std::optional<SpiFrame> SpiManager::gen_spi_frame(const IPCData& ipc) {
                 seq_mapper_.remove_mapping(ipc.seq);
             } else {
                 seq_id = seq_mapper_.allocate_mapped_seq();
+#if defined(RUN_UNRELIABLE_MODE)
+                cmd = Command::WRITE_UNREL;
+#else
                 cmd = Command::WRITE;
+#endif
             }
             break;
         }
 
         default: {
-            LOGE("gen_spi_frame, only EXECUTE and SET message need to send to MCU. %u", static_cast<uint8_t>(ipc.flow));
+            LOGE("gen_spi_frame, got %sOnly, but only EXECUTE_REQ and SET_REQ need to be sent to the MCU!",
+                SpiCommon::MsgTypeToStr(ipc.typ).c_str());
             return std::nullopt;
         }
     }
@@ -266,39 +278,39 @@ std::optional<Packet> SpiManager::parse_spi_response(const std::vector<uint8_t>&
 
 bool SpiManager::send_spi_frame(const SpiFrame& frame, std::vector<uint8_t>& recv_buf)
 {
+    bool got_response = false;
     std::vector<uint8_t> bytes = frame.toBytes();
-    LOGI("Send to slave: %s", SpiCommon::bytesToHexString(bytes).c_str());
+    LOGI("--- send_spi_frame %s begin ---", SpiFrame::commandToStr(frame.cmd_id_).c_str());
 
     switch (frame.cmd_id_) {
         case Command::WRITE_UNREL:
         case Command::RESPONSE:
             // No matter whether the transmission is reliable or unreliable,
             // the MCU will not send an ACK after RESPONSE message be received.
-            spi_dev_.write(bytes.data(), bytes.size(), SpiDev::UNRELIABLE);
-            return false;
-
+            spi_dev_.write(bytes.data(), nullptr, bytes.size(), SpiDev::UNRELIABLE);
+            break;
         case Command::WRITE:
-            spi_dev_.write(bytes.data(), bytes.size(), SpiDev::RELIABLE);
-            return false;
-
+            spi_dev_.write(bytes.data(), nullptr, bytes.size(), SpiDev::RELIABLE);
+            break;
         case Command::READ_UNREL:
-            return (spi_dev_.read(bytes.data(), recv_buf.data(),
+            got_response = (spi_dev_.read(bytes.data(), recv_buf.data(),
                                  bytes.size(), SpiDev::UNRELIABLE) == 0);
-
+            break;
         case Command::READ:
-            return (spi_dev_.read(bytes.data(), recv_buf.data(),
+            got_response = (spi_dev_.read(bytes.data(), recv_buf.data(),
                                  bytes.size(), SpiDev::RELIABLE) == 0);
-
+            break;
         case Command::SERVICE_MCU_REQUEST:
-            if (spi_dev_.write(bytes.data(), bytes.size(), SpiDev::RELIABLE) == 0) {
+            if (spi_dev_.write(bytes.data(), nullptr, bytes.size(), SpiDev::RELIABLE) == 0) {
                 tx_queue_.push_front(Packet{PacketSource::READ, std::monostate{}});
                 LOGI("Push READ Packet");
             }
+            break;
         default:
-            LOGE("send_spi_frame, invalid command %u",
-                 static_cast<uint8_t>(frame.cmd_id_));
-            return false;
+            LOGE("send_spi_frame, invalid command %u", static_cast<uint8_t>(frame.cmd_id_));
     }
+    LOGI("--- send_spi_frame %s end ---", SpiFrame::commandToStr(frame.cmd_id_).c_str());
+    return got_response;
 }
 
 // ====================== Handle GPIO event =============================
@@ -375,6 +387,7 @@ void SpiManager::gpioMonitorThread() {
         }
 
         if (nfds == 1 && (events[0].events & (EPOLLPRI | EPOLLERR))) {
+            LOGI("GPIO has been triggered");
             // On the first check, trigger and send the event
             check_gpio_level_and_notify(level);
 

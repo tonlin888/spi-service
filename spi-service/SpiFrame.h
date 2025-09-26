@@ -28,6 +28,7 @@ public:
         WRITE = 0x04,
         READ = 0x05,
         SERVICE_MCU_REQUEST = 0x06,
+        // spi service internal use
         UNKNOWN_CMD = UINT8_MAX,
     };
 
@@ -38,38 +39,33 @@ public:
     std::vector<uint8_t> payload_;
     uint16_t checksum_;
 
-    size_t next_;
     bool valid_{false};
 
     SpiFrame() {}
 
     SpiFrame(Direction direction,
-             uint16_t seq_id,
-             Command cmd_id,
-             const std::vector<uint8_t>& full_payload,
-             size_t offset = 0)
-        : direction_(direction), seq_id_(seq_id), cmd_id_(cmd_id), offset_(offset) {
-        if (offset_ >= full_payload.size()) {
-            payload_len_ = 0;
-        } else {
-            payload_len_ = std::min<uint16_t>(
-                SpiCommon::MAX_SPI_PAYLOAD_SIZE,
-                static_cast<uint16_t>(full_payload.size() - offset_)
-            );
-            payload_.assign(full_payload.begin() + offset_,
-                            full_payload.begin() + offset_ + payload_len_);
-            if (payload_.size() < SpiCommon::MAX_SPI_PAYLOAD_SIZE) {
-                payload_.resize(SpiCommon::MAX_SPI_PAYLOAD_SIZE, 0);
-            }
-            valid_ = (payload_len_ > 0);
+            uint16_t seq_id,
+            Command cmd_id,
+            const std::vector<uint8_t>& full_payload)
+        : direction_(direction), seq_id_(seq_id), cmd_id_(cmd_id) {
+
+        // Determine payload length (max MAX_SPI_PAYLOAD_SIZE)
+        payload_len_ = std::min<uint16_t>(full_payload.size(), SpiCommon::MAX_SPI_PAYLOAD_SIZE);
+
+        // Copy the data slice
+        payload_.assign(full_payload.begin(), full_payload.begin() + payload_len_);
+
+        // Pad with zeros if less than MAX_SPI_PAYLOAD_SIZE
+        if (payload_.size() < SpiCommon::MAX_SPI_PAYLOAD_SIZE) {
+            payload_.resize(SpiCommon::MAX_SPI_PAYLOAD_SIZE, 0);
         }
 
-        next_ = offset_ + payload_len_;
+        valid_ = (payload_len_ > 0);
         checksum_ = calcChecksum();
     }
 
     bool parse(const std::vector<uint8_t>& buf) {
-        if (buf.size() < SpiCommon::MAX_SPI_FRAME_SIZE) { // buffer size must be 128 bytes
+        if (buf.size() < SpiCommon::MAX_SPI_FRAME_SIZE) { // buffer size must be MAX_SPI_FRAME_SIZE bytes
             LOGW("parse, buf.size()=%u < %u", buf.size(), SpiCommon::MAX_SPI_FRAME_SIZE);
             return false;
         }
@@ -133,6 +129,7 @@ public:
         out.push_back(payload_len_ & 0xFF);
         out.push_back((payload_len_ >> 8) & 0xFF);
 
+        // Payload: include padding zeros
         out.insert(out.end(), payload_.begin(), payload_.end());
 
         out.push_back(checksum_ & 0xFF);
@@ -145,7 +142,8 @@ public:
 
     // output debug string
     std::string toString() const {
-        return SpiCommon::bytesToHexString(toBytes());
+        std::vector<uint8_t> buf = toBytes();
+        return SpiCommon::bytesToShortHexString(buf);
     }
 
     std::vector<uint8_t> get_effective_payload() const {
@@ -164,19 +162,45 @@ public:
     }
 
     static uint16_t get_seq_id(const uint8_t* buf, size_t len) {
-        if (!buf || len < 3) { 
+        if (!buf || len < 3) {
             LOGE("get_seq_id, invalid buffer!");
             return SpiCommon::INVALID_SEQ_ID;
         }
         return static_cast<uint16_t>((buf[1]) | (static_cast<uint16_t>(buf[2]) << 8));
     }
-    
+
     static Command get_cmd_id(const uint8_t* buf, size_t len) {
         if (!buf || len < 4) {
             LOGE("get_cmd_id, invalid buffer!");
             return Command::UNKNOWN_CMD;
         }
-        return static_cast<Command>(buf[3]);
+        uint8_t val = buf[3];
+        switch (val) {
+            case 0x00: return Command::WRITE_UNREL;
+            case 0x01: return Command::READ_UNREL;
+            case 0x02: return Command::RESPONSE;
+            case 0x03: return Command::ACK_STATUS;
+            case 0x04: return Command::WRITE;
+            case 0x05: return Command::READ;
+            case 0x06: return Command::SERVICE_MCU_REQUEST;
+            default:
+                LOGW("get_cmd_id, unknown command: 0x%02X", val);
+                return Command::UNKNOWN_CMD;
+        }
+    }
+
+    static std::string commandToStr(Command cmd) {
+        switch (cmd) {
+            case Command::WRITE_UNREL:       return "WRITE_UNREL";
+            case Command::READ_UNREL:        return "READ_UNREL";
+            case Command::RESPONSE:          return "RESPONSE";
+            case Command::ACK_STATUS:        return "ACK_STATUS";
+            case Command::WRITE:             return "WRITE";
+            case Command::READ:              return "READ";
+            case Command::SERVICE_MCU_REQUEST: return "SERVICE_MCU_REQUEST";
+            case Command::UNKNOWN_CMD:       return "UNKNOWN_CMD";
+            default:                         return "INVALID_CMD";
+        }
     }
 
 private:
@@ -185,24 +209,24 @@ private:
     // sum of all word in 16-bit Little Endian words
     uint16_t calcChecksum() const {
         std::vector<uint8_t> buf;
-    
+
         // direction_ (1 byte)
         buf.push_back(static_cast<uint8_t>(direction_));
-    
+
         // seq_id_ (2 bytes, little endian)
         buf.push_back(static_cast<uint8_t>(seq_id_ & 0xFF));
         buf.push_back(static_cast<uint8_t>((seq_id_ >> 8) & 0xFF));
-    
+
         // cmd_id_ (1 bytes)
         buf.push_back(static_cast<uint8_t>(cmd_id_));
-    
+
         // payload_len_ (2 bytes, little endian)
         buf.push_back(static_cast<uint8_t>(payload_len_ & 0xFF));
         buf.push_back(static_cast<uint8_t>((payload_len_ >> 8) & 0xFF));
-    
+
         // payload_
         buf.insert(buf.end(), payload_.begin(), payload_.end());
-        
+
         return SpiCommon::calcChecksum(buf.data(), buf.size());
     }
 };

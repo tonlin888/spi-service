@@ -1,4 +1,5 @@
 #pragma once
+#include "SpiCommon.h"
 #include <variant>
 #include <vector>
 #include <sstream>
@@ -10,35 +11,23 @@ enum class PacketSource : uint8_t {
     READ
 };
 
-enum class MessageFlow : uint8_t {
-    NONE,
-
-    // IPC --> SPI
-    EXECUTE = 0x10,  // expects a response from MCU
-    SET = 0x11,      // no response required
-
-    // IPC <-- SPI
-    NOTIFY = 0x20,   // deliver to all registered clients
-    RESPONSE  = 0x21 // deliver only to the client that issued EXECUTE_REQ
-};
-
 class IPCData {
 public:
     int client_fd;
-    MessageFlow flow;        // Message flow
-    uint16_t seq;            // Sequence ID (used for matching requests/responses)
+    SpiCommon::MsgType typ;    // Message type
+    uint16_t seq;               // Sequence ID (used for matching requests/responses)
     std::vector<uint8_t> data;
 
     IPCData() = default;
 
-    IPCData(int fd, MessageFlow f, uint16_t s, std::vector<uint8_t> d)
-        : client_fd(fd), flow(f), seq(s), data(std::move(d)) {}
+    IPCData(int fd, SpiCommon::MsgType typ, uint16_t s, std::vector<uint8_t> d)
+        : client_fd(fd), typ(typ), seq(s), data(std::move(d)) {}
 
     std::string toString() const {
         std::ostringstream oss;
         oss << "IPCData{"
             << "client_fd=" << client_fd
-            << ", flow=" << static_cast<int>(flow)
+            << ", " << SpiCommon::MsgTypeToStr(typ)
             << ", seq=" << seq
             << ", data=[";
 

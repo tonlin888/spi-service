@@ -12,10 +12,10 @@
 // Shared by Client and Server (SPI service)
 //
 // Each message has the following structure:
-//     SEQ_ID: 2 bytes, the message sequence number
+//     SEQ_ID: 2 bytes, the message sequence number (little endian)
 //     MSG_TYPE: 1 byte, the message type
 //     ERROR_CODE: 1 byte, only valid in spi-service's RESPONSE
-//     LEN: 2 bytes, payload length
+//     LEN: 2 bytes, payload length (little endian)
 //     DATA: variable-length payload
 //     CHECKSUM: 2 bytes, 16-bit sum of all fields except CHECKSUM
 //
@@ -53,8 +53,10 @@ static constexpr size_t MAX_SPI_FRAME_SIZE = 128;       // SPI frame length = he
 static constexpr size_t MAX_SPI_PAYLOAD_SIZE = 120;     // Maximum SPI frame payload size
 static constexpr size_t HEADER_SIZE = 6;                // SEQ(2) + MSG_TYPE(1) + ERR(1) + LEN(2)
 static constexpr size_t TAIL_SIZE   = 2;                // checksum(2)
+static constexpr uint32_t SPI_SPEED = 1000000;          // 1 MHz
 
 static constexpr uint16_t INVALID_SEQ_ID = 0;           // invalid sequence id
+static constexpr size_t MAX_HEX_STRING_LOG_LEN = 20;    // Maximum hex string log length at toString()
 
 static constexpr const char* IPC_SOCKET_PATH = "/tmp/spi-service/ipc.sock";
 
@@ -67,11 +69,14 @@ enum class MsgType : uint8_t {
     NONE           = 0x00,  // No action
 
     // Client --> SPI Service
-    REGISTER_REQ   = 0x10,  // Re-register client for notifications (expects a response from SPI Service with the same SEQ_ID)
-                            // Clients register the MCU commands they can handle, including both notifications
-                            // (unsolicited MCU messages) and requests (commands requiring a response). The system uses this
-                            // registration to route incoming MCU messages to the appropriate client handler.
-    UNREGISTER_REQ = 0x11,  // Remove client from notification list (expects a response from SPI Service with the same SEQ_ID)
+    REGISTER_REQ   = 0x10,  // Re-register client for MCU command list. (expects a response from SPI Service with the same SEQ_ID)
+                            //     Data is a little-endian 16-bit array.
+                            //     Values ≥ CMD_GROUP_ID_BASE are mapped to predefined command groups(CMD_GROUP).
+                            // Clients register the MCU commands they can handle, including:
+                            //     Notifications: unsolicited MCU messages 
+                            //          Requests: commands requiring a response
+                            // The system uses this registration to route incoming MCU messages to the appropriate client handler.
+    UNREGISTER_REQ = 0x11,  // Remove client from MCU command list. (expects a response from SPI Service with the same SEQ_ID)
 
     // Client --> SPI Service ---> MCU
     EXECUTE_REQ    = 0x20,  // Request the other side to execute an action (expects a response from MCU with the same SEQ_ID)
@@ -109,23 +114,51 @@ enum class McuCommand : uint16_t {
     SUB_CMD_INVALID = UINT16_MAX,
 };
 
+// ========== Predefined Command Groups ==========
+static constexpr size_t CMD_GROUP_COUNT = 1;
+static constexpr uint16_t CMD_GROUP_ID_BASE = 0xFF00;
+const std::array<std::vector<uint16_t>, CMD_GROUP_COUNT> CMD_GROUP = {{
+    {0x1001, 0x1002, 0x1003},        // group 0, just for demo. modify later
+}};
+
 // ========== Utility Functions ==========
 
 // Core function: convert any byte sequence to a hex string (uppercase + space-separated)
-inline std::string bytesToHexString(const uint8_t* data, size_t len) {
+inline std::string bytesToHexString(const uint8_t* data, size_t len, size_t maxBytes = 0) {
     std::ostringstream oss;
     oss.setf(std::ios::uppercase);   // Uppercase fixed
     oss << std::hex;
-    for (size_t i = 0; i < len; i++) {
+
+    size_t limit = (maxBytes == 0) ? len : std::min(len, maxBytes);
+
+    for (size_t i = 0; i < limit; i++) {
         oss << std::setw(2) << std::setfill('0')
             << static_cast<unsigned int>(data[i]);
-        if (i != len - 1) oss << " ";  // Space between bytes
+        if (i != limit - 1) oss << " ";
     }
     return oss.str();
 }
 
-inline std::string bytesToHexString(const std::vector<uint8_t>& buf) {
-    return bytesToHexString(buf.data(), buf.size());
+inline std::string bytesToHexString(const std::vector<uint8_t>& buf, size_t maxBytes = 0) {
+    return bytesToHexString(buf.data(), buf.size(), maxBytes);
+}
+
+inline std::string bytesToShortHexString(const uint8_t* rx_buf, size_t len) {
+    if (!rx_buf || len == 0) {
+        return "<empty>";
+    }
+
+    if (len > (MAX_HEX_STRING_LOG_LEN + TAIL_SIZE)) {
+        std::string head = bytesToHexString(rx_buf, std::min(len, MAX_HEX_STRING_LOG_LEN));
+        std::string tail = bytesToHexString(rx_buf + len - TAIL_SIZE, TAIL_SIZE);
+        return head + " ... " + tail;
+    } else {
+        return bytesToHexString(rx_buf, len);
+    }
+}
+
+inline std::string bytesToShortHexString(const std::vector<uint8_t>& buf) {
+    return bytesToShortHexString(buf.data(), buf.size());
 }
 
 // Generic integral -> hex string (Little Endian)
@@ -202,6 +235,19 @@ inline std::string msgToHexString(const uint8_t* buf, size_t len) {
     }
 
     return oss.str();
+}
+
+inline std::string MsgTypeToStr(MsgType msg) {
+    switch (msg) {
+        case MsgType::NONE:           return "NONE";
+        case MsgType::REGISTER_REQ:   return "REGISTER_REQ";
+        case MsgType::UNREGISTER_REQ: return "UNREGISTER_REQ";
+        case MsgType::EXECUTE_REQ:    return "EXECUTE_REQ";
+        case MsgType::SET_REQ:        return "SET_REQ";
+        case MsgType::RESPONSE:       return "RESPONSE";
+        case MsgType::NOTIFY:         return "NOTIFY";
+        default:                      return "UNKNOWN";
+    }
 }
 
 // sum of all word in 16-bit Little Endian words

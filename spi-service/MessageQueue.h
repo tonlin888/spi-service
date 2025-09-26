@@ -97,12 +97,14 @@ public:
     }
 
     void set_waiting_response(uint16_t seq, uint16_t mcu_cmd) {
+        LOGI("set_waiting_response");
         std::lock_guard<std::mutex> lock(mutex_);
         waiting_response_ = seq;
         waiting_mcu_cmd_ = mcu_cmd;
     }
 
     void clear_waiting_response() {
+        LOGI("clear_waiting_response");
         std::lock_guard<std::mutex> lock(mutex_);
         waiting_response_ = 0;
         waiting_mcu_cmd_ = 0;

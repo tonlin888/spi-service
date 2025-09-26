@@ -19,14 +19,13 @@ public:
     bool open_dev();
     void close_dev();
 
-    int write(const uint8_t* tx_buf, size_t len, bool reliable = true);
+    int write(const uint8_t* tx_buf, uint8_t* rx_buf, size_t len, bool reliable = true);
 
     int read(const uint8_t* tx_buf, uint8_t* rx_buf, size_t len, bool reliable = true);
 
     int read_async(uint8_t* rx_buf, size_t len, bool reliable = true);
 
 private:
-    static constexpr int SPI_SPEED = 1000000; // 1 MHz
     static constexpr uint8_t MCU_READY_FLAG = 0x55;
     static constexpr size_t SPI_RETRY_DELAY_MS = 10;
     static constexpr size_t SPI_RETRY_COUNT = 10;
@@ -39,11 +38,14 @@ private:
     int transfer_with_retry(const uint8_t* tx_buf, uint8_t* rx_buf, size_t len, int retry_count, bool check_flag);
 
     int send_ack(uint16_t seq, uint8_t status);
-    int write1(const uint8_t* tx_buf, size_t len, bool reliable);
+    int write1(const uint8_t* tx_buf, uint8_t* rx_buf, size_t len, bool reliable);
     int read1(uint8_t* rx_buf, size_t len, uint16_t seq_id, bool reliable);
 
-    static bool got_ack(const uint8_t* rx_buf, size_t len, uint16_t expected_seq_id);
-    static bool got_response(const uint8_t* rx_buf, size_t len, uint16_t expected_seq_id);
+    struct FrameResult {
+        SpiFrame::Command cmd;
+        bool good;
+    };
+    static FrameResult got_frame(const uint8_t* rx_buf, size_t len, uint16_t expected_seq_id);
 };
 
 //Reliable mode:

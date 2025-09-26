@@ -12,7 +12,7 @@
 // SEQ_ID (2 bytes)
 // CMD_ID (1 byte)
 // PAYLOAD_LEN (2 bytes)
-// PAYLOAD: SUB_CMD_ID (2 bytes) + Data (up to 118 bytes), zero padding to 120 bytes
+// PAYLOAD: SUB_CMD_ID (2 bytes) + Data (zero padding up to MAX_SPI_FRAME_SIZE bytes)
 // CHECKSUM (2 bytes)
 
 class SpiManager {

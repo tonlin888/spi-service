@@ -26,10 +26,11 @@ std::atomic<bool> running{true};
 // Return default command title based on command number
 std::string getMessageTitle(int cmd) {
     switch (cmd) {
-        case 1: return "Register: 02, 03, 04, 05, 07";
-        case 2: return "Unregister: 04 05";
-        case 3: return "Execute MCU Command";
-        case 4: return "Set MCU Red LED On";
+        case 1: return "register 2, 3, 4, 5, 7 commands";
+        case 2: return "register command group#0";
+        case 3: return "unregister 4 5 commands";
+        case 4: return "set MCU red LED on";
+        case 5: return "execute MCU command";
         default: return "Unknown Command";
     }
 }
@@ -42,26 +43,33 @@ std::vector<uint8_t> getMessage(int cmd) {
         case 1: return packMessage(global_seq,
                     MsgType::REGISTER_REQ,
                     ErrorCode::NONE,
-                    hexStringToBytes("02 03 04 05 07"));
+                    hexStringToBytes("02 00 03 00 04 00 05 00 07 00"));
+
+        // Register the command group 0 defined at cmd_groups@SpiCommon.h
+        case 2: return packMessage(global_seq,
+                    MsgType::REGISTER_REQ,
+                    ErrorCode::NONE,
+                    hexStringToBytes("00 FF"));
 
         // Unregister the commands 02 and 03; the spi-service responds with a message carrying the same SEQ_ID indicating success or failure
         // and no further notifications will be received for these two commands.
-        case 2: return packMessage(global_seq,
+        case 3: return packMessage(global_seq,
                     MsgType::UNREGISTER_REQ,
                     ErrorCode::NONE,
-                    hexStringToBytes("04 05"));
-
-        // Execute command 06; the MCU responds with a message carrying the same SEQ_ID and the execution result.
-        case 3: return packMessage(global_seq,
-                    MsgType::EXECUTE_REQ,
-                    ErrorCode::NONE,
-                    hexStringToBytes("00 00"));
+                    hexStringToBytes("04 00 05 00"));
 
         // Set the red LED to ON; no response message is returned.
         case 4: return packMessage(global_seq,
                     MsgType::SET_REQ,
                     ErrorCode::NONE,
-                    hexStringToBytes("01 00 01"));
+                    hexStringToBytes("01 00 01")); // SUB_CMD_SET_LED (little endian)
+
+        // Execute command; the MCU responds with a message carrying the same SEQ_ID and the execution result.
+        case 5: return packMessage(global_seq,
+                    MsgType::EXECUTE_REQ,
+                    ErrorCode::NONE,
+                    hexStringToBytes("00 00"));
+
 
         default: return std::vector<uint8_t>{}; // default
     }
