@@ -94,17 +94,17 @@ public:
         // seq_ (2 bytes, little endian)
         buf.push_back(static_cast<uint8_t>(seq_ & 0xFF));
         buf.push_back(static_cast<uint8_t>((seq_ >> 8) & 0xFF));
-    
+
         // msg_t_ (1 byte)
         buf.push_back(static_cast<uint8_t>(msg_t_));
-    
+
         // err_ (1 byte)
         buf.push_back(static_cast<uint8_t>(err_));
-    
+
         // len_ (2 bytes, little endian)
         buf.push_back(static_cast<uint8_t>(len_ & 0xFF));
         buf.push_back(static_cast<uint8_t>((len_ >> 8) & 0xFF));
-    
+
         // data_
         buf.insert(buf.end(), data_.begin(), data_.end());
 
@@ -161,7 +161,7 @@ public:
     bool is_valid() const { return valid_; }
 
     static uint16_t get_seq_id(const uint8_t* buf, size_t len) {
-        if (!buf || len < 2) { 
+        if (!buf || len < 2) {
             LOGE("get_seq_id, invalid buffer!");
             return SpiCommon::INVALID_SEQ_ID;
         }

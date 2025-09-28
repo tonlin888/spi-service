@@ -303,7 +303,7 @@ bool SpiManager::send_spi_frame(const SpiFrame& frame, std::vector<uint8_t>& rec
         case Command::SERVICE_MCU_REQUEST:
             if (spi_dev_.write(bytes.data(), nullptr, bytes.size(), SpiDev::RELIABLE) == 0) {
                 tx_queue_.push_front(Packet{PacketSource::READ, std::monostate{}});
-                LOGI("Push READ Packet");
+                LOGI("Push READ packet");
             }
             break;
         default:

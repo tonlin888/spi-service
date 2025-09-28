@@ -5,6 +5,8 @@
 #include <optional>
 #include "SpiFrame.h"
 
+#define SPI_MODE_STR(mode) ((mode) ? "reliable" : "unreliable")
+
 class SpiDev {
 public:
     static constexpr const char* DEFAULT_SPI_DEV = "/dev/spidev2.0";
@@ -30,22 +32,24 @@ private:
     static constexpr size_t SPI_RETRY_DELAY_MS = 10;
     static constexpr size_t SPI_RETRY_COUNT = 10;
 
+    struct FrameResult {
+        SpiFrame::Command cmd;
+        bool good;
+    };
+
     int spi_fd_;
     std::string device_;
     std::mutex mtx_;
 
     int do_transfer(const uint8_t* tx_buf, uint8_t* rx_buf, size_t len);
-    int transfer_with_retry(const uint8_t* tx_buf, uint8_t* rx_buf, size_t len, int retry_count, bool check_flag);
+    int transfer_locked(const uint8_t* tx_buf, uint8_t* rx_buf, size_t len);
+    int transfer_reliable_locked(const uint8_t* tx_buf, uint8_t* rx_buf, size_t len);
 
-    int send_ack(uint16_t seq, uint8_t status);
-    int write1(const uint8_t* tx_buf, uint8_t* rx_buf, size_t len, bool reliable);
+    int write1(const uint8_t* tx_buf, uint8_t* rx_buf, size_t len);
+    int write1_reliable(const uint8_t* tx_buf, uint8_t* rx_buf, size_t len);
     int read1(uint8_t* rx_buf, size_t len, uint16_t seq_id, bool reliable);
-
-    struct FrameResult {
-        SpiFrame::Command cmd;
-        bool good;
-    };
-    static FrameResult got_frame(const uint8_t* rx_buf, size_t len, uint16_t expected_seq_id);
+    int send_ack(uint16_t seq, uint8_t status);
+    FrameResult verify_rx_frame(const uint8_t* rx_buf, size_t len, uint16_t expected_seq_id);
 };
 
 //Reliable mode:

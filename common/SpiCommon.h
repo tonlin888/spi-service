@@ -73,7 +73,7 @@ enum class MsgType : uint8_t {
                             //     Data is a little-endian 16-bit array.
                             //     Values ≥ CMD_GROUP_ID_BASE are mapped to predefined command groups(CMD_GROUP).
                             // Clients register the MCU commands they can handle, including:
-                            //     Notifications: unsolicited MCU messages 
+                            //     Notifications: unsolicited MCU messages
                             //          Requests: commands requiring a response
                             // The system uses this registration to route incoming MCU messages to the appropriate client handler.
     UNREGISTER_REQ = 0x11,  // Remove client from MCU command list. (expects a response from SPI Service with the same SEQ_ID)
@@ -118,7 +118,7 @@ enum class McuCommand : uint16_t {
 static constexpr size_t CMD_GROUP_COUNT = 1;
 static constexpr uint16_t CMD_GROUP_ID_BASE = 0xFF00;
 const std::array<std::vector<uint16_t>, CMD_GROUP_COUNT> CMD_GROUP = {{
-    {0x1001, 0x1002, 0x1003},        // group 0, just for demo. modify later
+    {0x1001, 0x1002, 0x1003},        // group 0, just for demo. replace by real command id later
 }};
 
 // ========== Utility Functions ==========

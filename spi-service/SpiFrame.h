@@ -65,8 +65,8 @@ public:
     }
 
     bool parse(const std::vector<uint8_t>& buf) {
-        if (buf.size() < SpiCommon::MAX_SPI_FRAME_SIZE) { // buffer size must be MAX_SPI_FRAME_SIZE bytes
-            LOGW("parse, buf.size()=%u < %u", buf.size(), SpiCommon::MAX_SPI_FRAME_SIZE);
+        if (buf.size() != SpiCommon::MAX_SPI_FRAME_SIZE) { // buffer size must be MAX_SPI_FRAME_SIZE bytes
+            LOGW("parse, buf.size()=%u != %u", buf.size(), SpiCommon::MAX_SPI_FRAME_SIZE);
             return false;
         }
 
@@ -109,7 +109,7 @@ public:
     }
 
     static std::optional<SpiFrame> fromBytes(const uint8_t* buf, size_t size) {
-        if (!buf || size == 0) {
+        if (!buf || size != SpiCommon::MAX_SPI_FRAME_SIZE) {
             LOGW("fromBytes, invalid buffer");
             return std::nullopt;
         }
