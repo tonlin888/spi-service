@@ -7,6 +7,7 @@ Install:
     adb root; adb shell "mount -o rw,remount /"
     adb push spi-service_1.0-1_arm_cortex-a7_neon-vfpv4.ipk /tmp
     adb shell "opkg remove spi-service"; adb shell "opkg install /tmp/spi-service_1.0-1_arm_cortex-a7_neon-vfpv4.ipk"
+    adb shell "opkg remove cmd-test"; adb shell "opkg install /tmp/cmd-test_1.0-1_arm_cortex-a7_neon-vfpv4.ipk"
 
 procd:
     /etc/init.d/spi-service disable

@@ -43,17 +43,19 @@
 //          the requested action, and replies with a Set Message
 //    Rule: The Notify Message and its corresponding Set Message
 //          share the same Sequence ID
+//
+//  Client must actively reconnect to the SPI service if the socket is unexpectedly closed (e.g. service restart).
 
 namespace SpiCommon {
 
 // ========== Constants ==========
-static constexpr size_t MAX_IPC_PACKET_SIZE = 512;      // Maximum IPC packet length
-static constexpr size_t MAX_IPC_DATA_SIZE = 120;        // Maximum IPC payload size
-static constexpr size_t MAX_SPI_FRAME_SIZE = 128;       // SPI frame length = header(6 bytes) + MAX_PAYLOAD + checksum(2 bytes)
-static constexpr size_t MAX_SPI_PAYLOAD_SIZE = 120;     // Maximum SPI frame payload size
+static constexpr size_t MAX_IPC_PACKET_SIZE = 2048;      // Maximum IPC packet length
+static constexpr size_t MAX_IPC_DATA_SIZE = 1016;        // Maximum IPC payload size
+static constexpr size_t MAX_SPI_FRAME_SIZE = 1024;       // SPI frame length = header(6 bytes) + MAX_PAYLOAD + checksum(2 bytes)
+static constexpr size_t MAX_SPI_PAYLOAD_SIZE = 1016;     // Maximum SPI frame payload size
 static constexpr size_t HEADER_SIZE = 6;                // SEQ(2) + MSG_TYPE(1) + ERR(1) + LEN(2)
-static constexpr size_t TAIL_SIZE   = 2;                // checksum(2)
-static constexpr uint32_t SPI_SPEED = 1000000;          // 1 MHz
+static constexpr size_t TAIL_SIZE   = 2;                // Checksum(2)
+static constexpr uint32_t SPI_SPEED = 10000000;         // 10 MHz
 
 static constexpr uint16_t INVALID_SEQ_ID = 0;           // invalid sequence id
 static constexpr size_t MAX_HEX_STRING_LOG_LEN = 20;    // Maximum hex string log length at toString()

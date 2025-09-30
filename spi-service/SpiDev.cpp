@@ -228,13 +228,10 @@ int SpiDev::write(const uint8_t* tx_buf, uint8_t* rx_buf, size_t len, bool relia
     if (reliable) {
         for (int attempt = 0; attempt < SPI_RETRY_COUNT; attempt++) {
             LOGI("%s write, write1_reliable on attempt %d", SPI_MODE_STR(reliable), attempt);
-            if (write1_reliable(tx_buf, rx_buf, len) == 0) {
-                result = true;
-                break;
-            }
+            if ((result = write1_reliable(tx_buf, rx_buf, len)) == 0) break;
         }
     } else {
-        result = (write1(tx_buf, rx_buf, len) ==0);
+        result = write1(tx_buf, rx_buf, len);
     }
     LOGI("%s write, return %d", SPI_MODE_STR(reliable), result);
     return result;
@@ -253,6 +250,7 @@ int SpiDev::read(const uint8_t* tx_buf, uint8_t* rx_buf, size_t len, bool reliab
             return -1;
         }
     } else {
+        write1(tx_buf, rx_buf, len);
         uint16_t seq_id = SpiFrame::get_seq_id(tx_buf, len);
         if ((read1(rx_buf, len, seq_id, UNRELIABLE) != 0)) {
             LOGE("%s read, read1 failed!", SPI_MODE_STR(reliable));

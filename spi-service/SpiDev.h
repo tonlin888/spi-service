@@ -42,6 +42,7 @@ private:
     std::mutex mtx_;
 
     int do_transfer(const uint8_t* tx_buf, uint8_t* rx_buf, size_t len);
+    int do_transfer_locked(const uint8_t* tx_buf, uint8_t* rx_buf, size_t len);
     int transfer_locked(const uint8_t* tx_buf, uint8_t* rx_buf, size_t len);
     int transfer_reliable_locked(const uint8_t* tx_buf, uint8_t* rx_buf, size_t len);
 
