@@ -111,7 +111,7 @@ void SpiManager::run() {
             case PacketSource::READ: {
                 LOGI("Processing READ packet");
 
-                if (spi_dev_.read_async(recv_buf.data(), recv_buf.size(), SpiDev::RELIABLE) == 0) {
+                if (spi_dev_.read_async(recv_buf.data(), recv_buf.size()) == 0) {
                     auto pkt_up_opt = parse_spi_response(recv_buf);
                     if (pkt_up_opt) rx_queue_.push(*pkt_up_opt);
                 } else {

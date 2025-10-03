@@ -5,6 +5,7 @@
 #include <cstring>
 #include <cerrno>
 #include <ctime>
+#include <mutex>
 #include <string>
 #include <vector>
 #include <sstream>
@@ -20,6 +21,9 @@
 enum class LogLevel { ERROR, WARN, INFO, DEBUG };
 
 inline void log_print(LogLevel level, const char* tag, const char* fmt, ...) {
+    static std::mutex log_mutex;
+    std::lock_guard<std::mutex> lock(log_mutex);
+
     const char* levelStr = nullptr;
     FILE* out = nullptr;
 

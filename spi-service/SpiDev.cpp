@@ -71,19 +71,19 @@ int SpiDev::transfer_locked(const uint8_t* tx_buf, uint8_t* rx_buf, size_t len) 
 
 int SpiDev::transfer_reliable_locked(const uint8_t* tx_buf, uint8_t* rx_buf, size_t len) {
     std::vector<uint8_t> dummy(SpiCommon::MAX_SPI_FRAME_SIZE);
-    
+
     auto try_transfer = [&](const uint8_t* tx, uint8_t* rx) {
         std::lock_guard<std::mutex> lock(mtx_);
         return (do_transfer(tx, rx, len) == 0) && rx && rx[0] == MCU_READY_FLAG;
     };
-    
+
     for (int i = 0; i < SPI_RETRY_COUNT; ++i) {
-         // Try write
+        // Try write
         if (tx_buf && try_transfer(tx_buf, rx_buf)) {
             return 0;
         }
         usleep(SPI_RETRY_DELAY_MS * 1000);
-        
+
         // Try read
         if (try_transfer(dummy.data(), rx_buf)) {
             return 0;
@@ -267,32 +267,36 @@ int SpiDev::read(const uint8_t* tx_buf, uint8_t* rx_buf, size_t len, bool reliab
 }
 
 // this function applies to MCU-initiated read or write operations.
-int SpiDev::read_async(uint8_t* rx_buf, size_t len, bool reliable) {
-    LOGI("%s read_async, begin", SPI_MODE_STR(reliable));
+int SpiDev::read_async(uint8_t* rx_buf, size_t len) {
+    LOGI("read_async, begin");
     if (len != SpiCommon::MAX_SPI_FRAME_SIZE) {
-        LOGE("%s read_async, buf's len %u != %u!", SPI_MODE_STR(reliable), len, SpiCommon::MAX_SPI_FRAME_SIZE);
+        LOGE("read_async, buf's len %u != %u!", len, SpiCommon::MAX_SPI_FRAME_SIZE);
         return -1;
     }
 
     std::vector<uint8_t> dummy(SpiCommon::MAX_SPI_FRAME_SIZE);
     // If the beginning of the received data is not MCU_READY_FLAG, retry reading up to SPI_RETRY_COUNT times.
     if (transfer_reliable_locked(dummy.data(), rx_buf, len) < 0) {
-        LOGE("%s read_async, transfer_reliable_locked failed!", SPI_MODE_STR(reliable));
+        LOGE("read_async, transfer_reliable_locked failed!");
         return -1;
     }
 
-    // checksum
-    if (reliable) {
+    SpiFrame::Command cmd = SpiFrame::get_cmd_id(rx_buf, len);
+    if (cmd == SpiFrame::Command::WRITE || cmd == SpiFrame::Command::READ) {
         auto spi_frame_opt  = SpiFrame::fromBytes(rx_buf, len);
         if (spi_frame_opt) {
-            send_ack(spi_frame_opt->seq_id_, SpiFrame::MCU_ACK_SUCCESS);
+            if (cmd == SpiFrame::Command::WRITE) {
+                send_ack(spi_frame_opt->seq_id_, SpiFrame::MCU_ACK_SUCCESS);
+            }
         } else {
-            LOGE("%s read_async, invalid frame!", SPI_MODE_STR(reliable));
+            LOGE("read_async, invalid %s frame!", SpiFrame::commandToStr(cmd).c_str());
             send_ack(0, SpiFrame::MCU_ACK_FAIL);
             return -1;
         }
+    } else if (cmd != SpiFrame::Command::WRITE_UNREL && cmd != SpiFrame::Command::READ_UNREL) {
+        LOGE("read_async, %s is not allowed!", SpiFrame::commandToStr(cmd).c_str());
     }
 
-    LOGI("%s read_async, return 0", SPI_MODE_STR(reliable));
+    LOGI("read_async, return 0");
     return 0;
 }

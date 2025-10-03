@@ -47,7 +47,7 @@ public:
         if (queue_.empty()) {
             return 0;
         }
-    
+
         uint8_t removed_count = 0;
         for (auto it = queue_.begin(); it != queue_.end();) {
             if (it->source == type) {

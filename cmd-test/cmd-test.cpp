@@ -98,22 +98,23 @@ std::vector<uint8_t> getMessage(int cmd) {
 
 // Receiver thread: read from socket and print messages
 void socketReceiver(int sock) {
-    char buf[1024];
+    std::vector<uint8_t> buf(SpiCommon::MAX_IPC_PACKET_SIZE);
     while (running) {
-        ssize_t n = read(sock, buf, sizeof(buf) - 1);
+        ssize_t n = read(sock, buf.data(), buf.size() - 1);
         if (n > 0) {
-            std::cout << "Received --> " << msgToHexString(reinterpret_cast<uint8_t *>(buf), n) << std::endl;
-            if (sizeof(buf) > 5) {
-                uint16_t mcu_cmd = static_cast<uint16_t>(buf[6]) | (static_cast<uint16_t>(buf[7]) << 8);
-                // result is required for mcu command 07
-                if (mcu_cmd == 0x07) {
-                    std::vector<uint8_t> data = packMessage(0x0001,
-                        MsgType::SET_REQ,
-                        ErrorCode::NONE,
-                        hexStringToBytes("07 00 D1 D2 D3"));
-                    if (write(sock, data.data(), data.size()) < 0) {
-                        perror("write");
-                    }
+            std::cout << "Received --> " << msgToHexString(buf.data(), n) << std::endl;
+            SpiCommon::Message msg;
+            SpiCommon::unpackMessage(buf, msg);
+
+            // MCU unreliable read
+            if (msg.msg_type == MsgType::NOTIFY && msg.data.size() == 1 && msg.data[0] == 0x01) {
+                std::cout << "MCU unreliable read" << std::endl;
+                std::vector<uint8_t> data = packMessage(msg.seq,
+                    MsgType::SET_REQ,
+                    ErrorCode::NONE,
+                    hexStringToBytes("01 00 D1 D2 D3"));
+                if (write(sock, data.data(), data.size()) < 0) {
+                    perror("write");
                 }
             }
             std::cout << "Command> ";

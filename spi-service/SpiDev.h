@@ -30,7 +30,7 @@ public:
 
     int read(const uint8_t* tx_buf, uint8_t* rx_buf, size_t len, bool reliable = true);
 
-    int read_async(uint8_t* rx_buf, size_t len, bool reliable = true);
+    int read_async(uint8_t* rx_buf, size_t len);
 
 private:
     static constexpr uint8_t MCU_READY_FLAG = 0x55;
