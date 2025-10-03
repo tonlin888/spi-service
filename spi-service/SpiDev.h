@@ -13,6 +13,11 @@ public:
     static constexpr const bool RELIABLE = true;
     static constexpr const bool UNRELIABLE = false;
 
+    enum class VerifyOption : uint8_t {
+        IGNORE_NONE,
+        IGNORE_SEQUENCE_ID,
+    };
+
     SpiDev() : device_(DEFAULT_SPI_DEV) {}
     ~SpiDev() {
         close_dev();
@@ -50,7 +55,7 @@ private:
     int write1_reliable(const uint8_t* tx_buf, uint8_t* rx_buf, size_t len);
     int read1(uint8_t* rx_buf, size_t len, uint16_t seq_id, bool reliable);
     int send_ack(uint16_t seq, uint8_t status);
-    FrameResult verify_rx_frame(const uint8_t* rx_buf, size_t len, uint16_t expected_seq_id);
+    FrameResult verify_rx_frame(const uint8_t* rx_buf, size_t len, uint16_t expected_seq_id, VerifyOption option = VerifyOption::IGNORE_NONE);
 };
 
 //Reliable mode:

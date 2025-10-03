@@ -31,6 +31,11 @@ std::string getMessageTitle(int cmd) {
         case 3: return "unregister 4 5 commands";
         case 4: return "set MCU red LED on";
         case 5: return "execute MCU command";
+        // special test for spi-service and MCU communication test only
+        case 6: return "trigger MCU reliable write -> red LED twice";
+        case 7: return "trigger MCU reliable read -> green LED twice";
+        case 8: return "trigger MCU unreliable write -> blue LED twice";
+        case 9: return "trigger MCU unreliable read -> white LED twice";
         default: return "Unknown Command";
     }
 }
@@ -68,9 +73,25 @@ std::vector<uint8_t> getMessage(int cmd) {
         case 5: return packMessage(global_seq,
                     MsgType::EXECUTE_REQ,
                     ErrorCode::NONE,
-                    hexStringToBytes("00 00"));
+                    hexStringToBytes("07 00")); // SUB_CMD_ID_READ (little endian)
 
-
+        // special test for spi-service and MCU communication test only
+        case 6: return packMessage(global_seq,
+                    MsgType::SET_REQ,
+                    ErrorCode::NONE,
+                    hexStringToBytes("08 00 00")); // SUB_CMD_ID_WRITE (little endian)
+        case 7: return packMessage(global_seq,
+                    MsgType::SET_REQ,
+                    ErrorCode::NONE,
+                    hexStringToBytes("08 00 01")); // SUB_CMD_ID_WRITE (little endian)
+        case 8: return packMessage(global_seq,
+                    MsgType::SET_REQ,
+                    ErrorCode::NONE,
+                    hexStringToBytes("08 00 02")); // SUB_CMD_ID_WRITE (little endian)
+        case 9: return packMessage(global_seq,
+                    MsgType::SET_REQ,
+                    ErrorCode::NONE,
+                    hexStringToBytes("08 00 03")); // SUB_CMD_ID_WRITE (little endian)
         default: return std::vector<uint8_t>{}; // default
     }
 }

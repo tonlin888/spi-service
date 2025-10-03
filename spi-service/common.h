@@ -4,6 +4,7 @@
 #include <cstdarg>
 #include <cstring>
 #include <cerrno>
+#include <ctime>
 #include <string>
 #include <vector>
 #include <sstream>
@@ -29,9 +30,14 @@ inline void log_print(LogLevel level, const char* tag, const char* fmt, ...) {
         case LogLevel::DEBUG: levelStr = "[D]"; out = stdout; break;
     }
 
+    // get the boot time
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    long ms = ts.tv_nsec / 1000000;
+
     va_list args;
     va_start(args, fmt);
-    fprintf(out, "[%s]%s ", tag, levelStr);
+    fprintf(out, "[%5lld.%03ld][%s]%s ", ts.tv_sec, ms, tag, levelStr);
     vfprintf(out, fmt, args);
     fprintf(out, "\n");
     va_end(args);

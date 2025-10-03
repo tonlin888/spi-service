@@ -70,19 +70,24 @@ int SpiDev::transfer_locked(const uint8_t* tx_buf, uint8_t* rx_buf, size_t len) 
 }
 
 int SpiDev::transfer_reliable_locked(const uint8_t* tx_buf, uint8_t* rx_buf, size_t len) {
+    std::vector<uint8_t> dummy(SpiCommon::MAX_SPI_FRAME_SIZE);
+    
+    auto try_transfer = [&](const uint8_t* tx, uint8_t* rx) {
+        std::lock_guard<std::mutex> lock(mtx_);
+        return (do_transfer(tx, rx, len) == 0) && rx && rx[0] == MCU_READY_FLAG;
+    };
+    
     for (int i = 0; i < SPI_RETRY_COUNT; ++i) {
-        bool transfer_ok = false;
-
-        {
-            std::lock_guard<std::mutex> lock(mtx_);
-            transfer_ok = (do_transfer(tx_buf, rx_buf, len) == 0);
+         // Try write
+        if (tx_buf && try_transfer(tx_buf, rx_buf)) {
+            return 0;
         }
-
-        if (transfer_ok && rx_buf && rx_buf[0] == MCU_READY_FLAG) {
-            return 0; // Transfer succeeded, MCU is ready
+        usleep(SPI_RETRY_DELAY_MS * 1000);
+        
+        // Try read
+        if (try_transfer(dummy.data(), rx_buf)) {
+            return 0;
         }
-
-        // Transfer failed or MCU not ready, wait before retrying
         usleep(SPI_RETRY_DELAY_MS * 1000);
     }
 
@@ -91,7 +96,6 @@ int SpiDev::transfer_reliable_locked(const uint8_t* tx_buf, uint8_t* rx_buf, siz
 }
 
 int SpiDev::write1(const uint8_t* tx_buf, uint8_t* rx_buf, size_t len) {
-    LOGI("write1");
     std::vector<uint8_t> dummy(SpiCommon::MAX_SPI_FRAME_SIZE);
     uint8_t* rx_ptr = (rx_buf != nullptr) ? rx_buf : dummy.data();
 
@@ -116,7 +120,9 @@ int SpiDev::write1_reliable(const uint8_t* tx_buf, uint8_t* rx_buf, size_t len) 
 
     // check ACK / RESPONSE
     uint16_t seq_id = SpiFrame::get_seq_id(tx_buf, len);
-    FrameResult res = verify_rx_frame(rx_ptr, len, seq_id);
+    // ignore checking the ack's sequence for SERVICE_MCU_REQUEST since it's assigned by MCU. (from Eddie)
+    VerifyOption opt = (SpiFrame::get_cmd_id(tx_buf, len) == Command::SERVICE_MCU_REQUEST) ? VerifyOption::IGNORE_SEQUENCE_ID : VerifyOption::IGNORE_NONE;
+    FrameResult res = verify_rx_frame(rx_ptr, len, seq_id, opt);
 
     // rx_buf != nullptr while we are in reading sequence
     if (rx_buf != nullptr && res.cmd == Command::RESPONSE) {
@@ -130,7 +136,7 @@ int SpiDev::write1_reliable(const uint8_t* tx_buf, uint8_t* rx_buf, size_t len) 
 
         }
     } else if (!(res.cmd == Command::ACK_STATUS && res.good))  {
-        LOGI("write1_reliable, got ACK failed on attempt %d! %s good=%d", SpiFrame::commandToStr(res.cmd).c_str(), res.good);
+        LOGI("write1_reliable, got ACK failed! %s good=%d", SpiFrame::commandToStr(res.cmd).c_str(), res.good);
         return -1;
     }
     LOGE("write1_reliable, return 0");
@@ -138,7 +144,6 @@ int SpiDev::write1_reliable(const uint8_t* tx_buf, uint8_t* rx_buf, size_t len) 
 }
 
 int SpiDev::read1(uint8_t* rx_buf, size_t len, uint16_t seq_id, bool reliable) {
-    LOGI("read1");
     std::vector<uint8_t> dummy(SpiCommon::MAX_SPI_FRAME_SIZE);
 
     // If the beginning of the received data is not MCU_READY_FLAG, retry reading up to SPI_RETRY_COUNT times.
@@ -165,7 +170,6 @@ int SpiDev::read1(uint8_t* rx_buf, size_t len, uint16_t seq_id, bool reliable) {
 int SpiDev::send_ack(uint16_t seq, uint8_t status) {
     int result;
 
-    LOGI("send_ack");
     SpiFrame spi_frame = SpiFrame(Direction::SOC2MCU, seq,
                             Command::ACK_STATUS, std::vector<uint8_t>{status});
     std::vector<uint8_t> bytes = spi_frame.toBytes();
@@ -174,7 +178,7 @@ int SpiDev::send_ack(uint16_t seq, uint8_t status) {
     return result;
 }
 
-SpiDev::FrameResult SpiDev::verify_rx_frame(const uint8_t* rx_buf, size_t len, uint16_t expected_seq_id) {
+SpiDev::FrameResult SpiDev::verify_rx_frame(const uint8_t* rx_buf, size_t len, uint16_t expected_seq_id, VerifyOption option) {
     Command cmd = SpiFrame::get_cmd_id(rx_buf, len);
     if (len != SpiCommon::MAX_SPI_FRAME_SIZE) {
         LOGE("verify_rx_frame, %s rx_buf's len %u != %u!", SpiFrame::commandToStr(cmd).c_str(), len, SpiCommon::MAX_SPI_FRAME_SIZE);
@@ -191,7 +195,7 @@ SpiDev::FrameResult SpiDev::verify_rx_frame(const uint8_t* rx_buf, size_t len, u
     const SpiFrame& spi_frame = *spi_frame_opt;
 
     // verify seq_id
-    if (spi_frame.seq_id_ != expected_seq_id) {
+    if (option != VerifyOption::IGNORE_SEQUENCE_ID && spi_frame.seq_id_ != expected_seq_id) {
         LOGE("verify_rx_frame, %s seq_id mismatch exp=%u got=%u",
             SpiFrame::commandToStr(cmd).c_str(), expected_seq_id, spi_frame.seq_id_);
         return {cmd, false};
@@ -200,14 +204,14 @@ SpiDev::FrameResult SpiDev::verify_rx_frame(const uint8_t* rx_buf, size_t len, u
     switch (spi_frame.cmd_id_) {
         case Command::ACK_STATUS:
             if (!spi_frame.is_ack_success()) {
-                LOGE("verify_rx_frame, Negative ACK!");
+                LOGE("verify_rx_frame, got NACK!");
                 return {cmd, false};
             }
-            LOGI("verify_rx_frame, ACK");
+            LOGI("verify_rx_frame, got ACK");
             return {cmd, true};
 
         case Command::RESPONSE:
-            LOGI("verify_rx_frame, RESPONSE, len=%u", spi_frame.payload_len_);
+            LOGI("verify_rx_frame, got RESPONSE, len=%u", spi_frame.payload_len_);
             return {cmd, true};
 
         default:

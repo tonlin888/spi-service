@@ -118,7 +118,7 @@ void SpiManager::run() {
                     tx_queue_.push_front(Packet{PacketSource::READ, std::monostate{}});
                     LOGE("Push READ Packet again!");
                 }
-                LOGI("Received from slave: %s", SpiCommon::bytesToHexString(recv_buf).c_str());
+                LOGI("Received from slave: %s", SpiCommon::bytesToShortHexString(recv_buf).c_str());
                 break;
             }
         }
@@ -367,8 +367,10 @@ uint8_t SpiManager::check_gpio_level_and_notify(uint8_t &last_level) {
     uint8_t new_level = (value[0] - 0x30);
     if (new_level != last_level) {
         last_level = new_level;
-        tx_queue_.push_front(Packet{PacketSource::GPIO, GPIOData{new_level}});
-        LOGI("Push GPIO Packet, GPIO level=%u", new_level);
+        if (new_level == 0) {
+            tx_queue_.push_front(Packet{PacketSource::GPIO, GPIOData{new_level}});
+            LOGI("Push GPIO Packet, GPIO level=%u", new_level);
+        }
     }
     return last_level;
 }
@@ -399,9 +401,15 @@ void SpiManager::gpioMonitorThread() {
 
                 // If it returns to High, the loop can terminate early
                 if (now_level == 1) {
-                    LOGI("gpioMonitorThread, GPIO level change to 1");
-                    tx_queue_.pop_front_if_read();
+                    uint8_t count_read = tx_queue_.remove_all_of(PacketSource::READ);
+                    uint8_t count_gpio = tx_queue_.remove_all_of(PacketSource::GPIO);
                     tx_queue_.clear_waiting_response();
+                    if (count_read || count_gpio) {
+                        LOGI("gpioMonitorThread, GPIO level change to 1, remove pending %u GPIO / %u READ packets",
+                            count_gpio, count_read);
+                    } else {
+                        LOGI("gpioMonitorThread, GPIO level change to 1");
+                    }
                     break;
                 }
             }

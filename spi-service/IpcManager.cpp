@@ -302,13 +302,12 @@ void IpcManager::rx_run() {
 
 void IpcManager::send_ipc_to_clients(const IPCData& ipc) {
 
-    uint16_t cmd_id;
+    uint16_t cmd_id = static_cast<uint16_t>(SpiCommon::McuCommand::SUB_CMD_INVALID);
     if (ipc.data.size() >= 2) {
         cmd_id = static_cast<uint16_t>(ipc.data[0]) | (static_cast<uint16_t>(ipc.data[1]) << 8);
         LOGI("send_ipc_to_clients, cmd_id=0x%04X", cmd_id);
     } else {
         LOGW("send_ipc_to_clients, ipc.data has less than 2 bytes");
-        return;
     }
 
     if (ipc.typ == MsgType::NOTIFY) {

@@ -2,6 +2,8 @@ Build:
     make package/spi-service/clean; make package/spi-service/compile V=s
     make package/spi-service/{clean,prepare} V=s
     make package/index
+    ?? ./scripts/feeds update -a
+    ?? ./scripts/feeds update packages
 
 Install:
     adb root; adb shell "mount -o rw,remount /"
@@ -10,6 +12,5 @@ Install:
     adb shell "opkg remove cmd-test"; adb shell "opkg install /tmp/cmd-test_1.0-1_arm_cortex-a7_neon-vfpv4.ipk"
 
 procd:
-    /etc/init.d/spi-service disable
-    /etc/init.d/spi-service stop
+    adb shell "/etc/init.d/spi-service disable"; adb shell "/etc/init.d/spi-service stop"
     logread | grep spi-service

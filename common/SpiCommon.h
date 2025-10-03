@@ -112,6 +112,8 @@ struct Message {
 enum class McuCommand : uint16_t {
     SUB_CMD_GET_LED_STATUS,
     SUB_CMD_SET_LED,
+    SUB_CMD_ID_READ = 0x0007,
+    SUB_CMD_ID_WRITE = 0x0008,
     // NOTE: Add other sub-command IDs here in the future
     SUB_CMD_INVALID = UINT16_MAX,
 };
@@ -120,7 +122,7 @@ enum class McuCommand : uint16_t {
 static constexpr size_t CMD_GROUP_COUNT = 1;
 static constexpr uint16_t CMD_GROUP_ID_BASE = 0xFF00;
 const std::array<std::vector<uint16_t>, CMD_GROUP_COUNT> CMD_GROUP = {{
-    {0x1001, 0x1002, 0x1003},        // group 0, just for demo. replace by real command id later
+    {0x1001, 0x1002, 0x1003, 0xFFFF},        // group 0, spi-service internal test
 }};
 
 // ========== Utility Functions ==========
@@ -135,8 +137,8 @@ inline std::string bytesToHexString(const uint8_t* data, size_t len, size_t maxB
 
     for (size_t i = 0; i < limit; i++) {
         oss << std::setw(2) << std::setfill('0')
-            << static_cast<unsigned int>(data[i]);
-        if (i != limit - 1) oss << " ";
+            << static_cast<unsigned int>(data[i])
+            << " ";
     }
     return oss.str();
 }

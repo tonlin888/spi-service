@@ -41,19 +41,24 @@ public:
         cond_.notify_one();
     }
 
-    // remove READ packet
-    bool pop_front_if_read() {
+    // remove all packets of given source type
+    uint8_t remove_all_of(PacketSource type) {
         std::lock_guard<std::mutex> lock(mutex_);
         if (queue_.empty()) {
-            return false;
+            return 0;
         }
-        const T& val = queue_.front();
-        if (val.source == PacketSource::READ) {
-            LOGI("pop_front_if_read, remove READ packet");
-            queue_.pop_front();
-            return true;
+    
+        uint8_t removed_count = 0;
+        for (auto it = queue_.begin(); it != queue_.end();) {
+            if (it->source == type) {
+                LOGI("remove_all_of, removing packet type=%d", static_cast<uint8_t>(type));
+                it = queue_.erase(it);
+                ++removed_count;
+            } else {
+                ++it;
+            }
         }
-        return false;
+        return removed_count;
     }
 
     // Blocking pop (wait until there is data or the queue is stopped)
@@ -104,8 +109,10 @@ public:
     }
 
     void clear_waiting_response() {
-        LOGI("clear_waiting_response, waiting_response_=%u waiting_mcu_cmd_=%u",
-        	waiting_response_, waiting_mcu_cmd_);
+        if (waiting_response_ || waiting_mcu_cmd_) {
+            LOGI("clear_waiting_response, waiting_response_=%u waiting_mcu_cmd_=%u",
+                waiting_response_, waiting_mcu_cmd_);
+        }
         std::lock_guard<std::mutex> lock(mutex_);
         waiting_response_ = 0;
         waiting_mcu_cmd_ = 0;
@@ -140,8 +147,13 @@ private:
     }
 
     void flush_pending_locked() {
-        LOGI("flush_pending_locked");
-        for (auto& m : pending_queue_) queue_.push_back(m);
+        size_t count = pending_queue_.size();
+        if (count > 0) {
+            LOGI("Moving %zu item(s) from pending_queue_ back to queue_", count);
+        }
+        for (auto& m : pending_queue_) {
+            queue_.push_back(m);
+        }
         pending_queue_.clear();
     }
 
