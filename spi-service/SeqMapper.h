@@ -16,16 +16,24 @@ class SeqMapper {
 public:
     struct Entry {
         uint16_t seq;
-        int client_fd;
+        int fd;
         SpiCommon::McuCommand cmd;
         uint64_t order; // Insertion order
+        
+        // toString member function to format Entry as a string
+        std::string toString() const {
+            return "{seq=" + std::to_string(seq) +
+               ", fd=" + std::to_string(fd) +
+               ", cmd=" + std::to_string(static_cast<int>(cmd)) +
+               ", order=" + std::to_string(order) + "}";
+        }
     };
 
     SeqMapper()
         : next_mapped_seq_(1), next_order_(1) {}
 
     // Add a mapping. mapped_seq auto-increments. Keep at most MAX_ENTRIES entries, remove the oldest if exceeded.
-    uint16_t add_mapping(uint16_t seq, int client_fd, SpiCommon::McuCommand cmd = SpiCommon::McuCommand::SUB_CMD_INVALID) {
+    uint16_t add_mapping(uint16_t seq, int fd, SpiCommon::McuCommand cmd = SpiCommon::McuCommand::SUB_CMD_INVALID) {
         std::lock_guard<std::mutex> lock(mu_);
         uint16_t mapped_seq = next_mapped_seq_++;
         if (next_mapped_seq_ == 0) next_mapped_seq_ = 1;
@@ -41,8 +49,8 @@ public:
             }
         }
 
-        mapped_to_entry_[mapped_seq] = Entry{seq, client_fd, cmd, next_order_++};
-        LOGI("add_mapping, mapped_seq=%u -> {seq=%u, client_fd=%d, cmd=%u}", mapped_seq, seq, client_fd, static_cast<uint16_t>(cmd));
+        mapped_to_entry_[mapped_seq] = Entry{seq, fd, cmd, next_order_++};
+        LOGI("add_mapping, mapped_seq=%u -> %s", mapped_seq, mapped_to_entry_[mapped_seq].toString().c_str());
         return mapped_seq;
     }
 
@@ -61,39 +69,43 @@ public:
         LOGI("set_next_mapped_seq, next_mapped_seq_=%u", next_mapped_seq_);
     }
 
-    // Find mapping. If not found, client_fd = -1
+    // Find mapping. If not found, fd = -1
     void find_mapping(uint16_t mapped_seq, Entry &out_entry) {
         std::lock_guard<std::mutex> lock(mu_);
         auto it = mapped_to_entry_.find(mapped_seq);
 
         if (it == mapped_to_entry_.end()) {
             // Not found, return default values
-            out_entry.client_fd = -1;
+            out_entry.fd = -1;
             out_entry.seq = 0;
             out_entry.cmd = SpiCommon::McuCommand::SUB_CMD_INVALID;
             out_entry.order = 0;
             LOGI("find_mapping, mapped_seq=%u not found", mapped_seq);
         } else {
             out_entry = it->second;
-            LOGI("find_mapping, mapped_seq=%u = {seq=%u, client_fd=%d, cmd=%u}", mapped_seq, out_entry.seq, out_entry.client_fd, out_entry.cmd);
+            LOGI("find_mapping, mapped_seq=%u -> %s", mapped_seq, out_entry.toString().c_str());
         }
     }
 
     // Remove a single mapping by mapped_seq
     bool remove_mapping(uint16_t mapped_seq) {
         std::lock_guard<std::mutex> lock(mu_);
-        LOGI("remove_mapping, mapped_seq=%u", mapped_seq);
+        auto it = mapped_to_entry_.find(mapped_seq);
+        if (it != mapped_to_entry_.end()) {
+            Entry& e = it->second;
+            LOGI("remove_mapping, mapped_seq=%u -> %s", mapped_seq, e.toString().c_str());
+        }
         return mapped_to_entry_.erase(mapped_seq) > 0;
     }
 
-    // Remove all mappings for a specific client_fd
-    std::vector<uint16_t> remove_client(int client_fd) {
+    // Remove all mappings for a specific fd
+    std::vector<uint16_t> remove_client(int fd) {
         std::lock_guard<std::mutex> lock(mu_);
-        LOGI("remove_client, client_fd=%d", client_fd);
+        LOGI("remove_client, fd=%d", fd);
 
         std::vector<uint16_t> removed;
         for (auto it = mapped_to_entry_.begin(); it != mapped_to_entry_.end();) {
-            if (it->second.client_fd == client_fd) {
+            if (it->second.fd == fd) {
                 removed.push_back(it->first);
                 it = mapped_to_entry_.erase(it);
             } else {
@@ -103,15 +115,15 @@ public:
         return removed;
     }
 
-    // If mapping exists and client_fd == -1, update to new_id
+    // If mapping exists and fd == -1, update to new_id
     bool update_client_if_unset(uint16_t mapped_seq, int new_id) {
         if (mapped_seq > 0) {
             std::lock_guard<std::mutex> lock(mu_);
             auto it = mapped_to_entry_.find(mapped_seq);
-            if (it != mapped_to_entry_.end() && it->second.client_fd == -1) {
-                it->second.client_fd = new_id;
-                LOGI("update_client_if_unset, mapped_seq=%u updated client_fd=%d",
-                    mapped_seq, new_id);
+            if (it != mapped_to_entry_.end() && it->second.fd == -1) {
+                it->second.fd = new_id;
+                LOGI("update_client_if_unset, mapped_seq=%u -> %s",
+                    mapped_seq, it->second.toString().c_str());
                 return true;
             }
         }
@@ -136,7 +148,7 @@ public:
         for (auto &kv : entries) {
             std::cout << "mapped_seq=" << kv.first
                       << " seq=" << kv.second.seq
-                      << " fd=" << kv.second.client_fd
+                      << " fd=" << kv.second.fd
                       << " cmd=" << static_cast<uint16_t>(kv.second.cmd)
                       << " order=" << kv.second.order << "\n";
         }

@@ -185,7 +185,7 @@ void IpcManager::process_message(int client_fd, const uint8_t* buf, size_t n) {
 void IpcManager::handle_client(int client_fd) {
     uint8_t buf[SpiCommon::MAX_IPC_PACKET_SIZE];
     ssize_t n = recv(client_fd, buf, sizeof(buf), 0);
-    LOGI("Received %d, bytes from fd=%d: %s", n, client_fd, SpiCommon::bytesToHexString(buf, n).c_str());
+    LOGI("Received %d bytes from fd=%d: %s", n, client_fd, SpiCommon::bytesToHexString(buf, n).c_str());
 
     if (n > 0) {
         process_message(client_fd, buf, n);

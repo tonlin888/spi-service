@@ -295,8 +295,9 @@ int SpiDev::read_async(uint8_t* rx_buf, size_t len) {
         }
     } else if (cmd != SpiFrame::Command::WRITE_UNREL && cmd != SpiFrame::Command::READ_UNREL) {
         LOGE("read_async, %s is not allowed!", SpiFrame::commandToStr(cmd).c_str());
+        return -1;
     }
 
-    LOGI("read_async, return 0");
+    LOGI("read_async, %s return 0", SpiFrame::commandToStr(cmd).c_str());
     return 0;
 }

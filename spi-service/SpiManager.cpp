@@ -25,6 +25,7 @@ SpiManager::SpiManager(MessageQueue<Packet>& tx_mq, MessageQueue<Packet>& rx_mq,
       seq_mapper_(seq_mapper),
       epoll_fd_(-1),
       gpio_fd_(-1),
+      event_fd_(-1),
       running_(false)
 {
     LOGI("SpiManager constructor");
@@ -50,6 +51,12 @@ void SpiManager::start() {
 void SpiManager::stop() {
     running_ = false;
 
+    // trigger eventfd top stop epoll_wait
+    uint64_t val = 1;
+    if (write(event_fd_, &val, sizeof(val)) < 0) {
+        LOGE("Failed to write to eventfd, err: %s", strerror(errno));
+    }
+
     if (gpio_thread_.joinable()) {
         gpio_thread_.join(); // wait for thread to finish
     }
@@ -63,7 +70,7 @@ void SpiManager::stop() {
 }
 
 void SpiManager::run() {
-    LOGI("Manager running...\n");
+    LOGI("SpiManager running...\n");
     std::vector<uint8_t> recv_buf(SpiCommon::MAX_SPI_FRAME_SIZE);
 
      while (running_) {
@@ -102,7 +109,8 @@ void SpiManager::run() {
                 // GPIO low ==> MCU has data to read
                 if (gpio.level == 0) {
                     // send SERVICE_MCU_REQUEST
-                    SpiFrame spi_frame = SpiFrame(Direction::SOC2MCU, seq_id_, Command::SERVICE_MCU_REQUEST, std::vector<uint8_t>{});
+                    uint16_t seq_id = seq_mapper_.allocate_mapped_seq();
+                    SpiFrame spi_frame = SpiFrame(Direction::SOC2MCU, seq_id, Command::SERVICE_MCU_REQUEST, std::vector<uint8_t>{});
                     send_spi_frame(spi_frame, recv_buf);
                 }
                 break;
@@ -173,7 +181,7 @@ std::optional<Packet> SpiManager::gen_ipc_packet(const SpiFrame& spi_frame) {
             SeqMapper::Entry entry;
             seq_mapper_.find_mapping(spi_frame.seq_id_, entry);
 
-            if (entry.client_fd < 0) {
+            if (entry.fd < 0) {
                 LOGE("No client's seq id maps to this spi's seq id(%u)", spi_frame.seq_id_);
                 return std::nullopt;
             }
@@ -182,7 +190,7 @@ std::optional<Packet> SpiManager::gen_ipc_packet(const SpiFrame& spi_frame) {
             seq_mapper_.remove_mapping(spi_frame.seq_id_);
 
             pkt_rx.payload = IPCData{
-                entry.client_fd,
+                entry.fd,
                 MsgType::RESPONSE,
                 entry.seq,
                 spi_frame.get_effective_payload()
@@ -227,7 +235,7 @@ std::optional<SpiFrame> SpiManager::gen_spi_frame(const IPCData& ipc) {
             SeqMapper::Entry entry;
             seq_mapper_.find_mapping(ipc.seq, entry);
 
-            if (entry.client_fd == ipc.client_fd) {
+            if (entry.fd == ipc.client_fd) {
                 // Reply to MCU read using MCU's sequence ID
                 seq_id = entry.seq;
                 cmd = Command::RESPONSE;
@@ -315,19 +323,42 @@ bool SpiManager::send_spi_frame(const SpiFrame& frame, std::vector<uint8_t>& rec
 
 // ====================== Handle GPIO event =============================
 
+void SpiManager::cleanup() {
+    if (event_fd_ >= 0) {
+        close(event_fd_);
+        event_fd_ = -1;
+    }
+    if (gpio_fd_ >= 0) {
+        close(gpio_fd_);
+        gpio_fd_ = -1;
+    }
+    if (epoll_fd_ >= 0) {
+        close(epoll_fd_);
+        epoll_fd_ = -1;
+    }
+}
+
 bool SpiManager::init_gpio() {
     // open GPIO
     gpio_fd_ = open(GPIO_PATH, O_RDONLY | O_NONBLOCK);
     if (gpio_fd_ < 0) {
-        LOGE("Failed to open GPIO: %s, err: %s", GPIO_PATH, strerror(errno));
+        LOGE("Failed to open GPIO: %s, err: %s!", GPIO_PATH, strerror(errno));
         return false;
     }
 
+    // create eventfd
+    event_fd_ = eventfd(0, EFD_CLOEXEC);
+    if (event_fd_ < 0) {
+        LOGE("Failed to create eventfd!, err:%s", strerror(errno));
+        cleanup();
+        return false;
+    }
+        
     // create an epoll instance
     epoll_fd_ = epoll_create1(0);
     if (epoll_fd_ < 0) {
         LOGE("Failed to create epoll instance: %s", strerror(errno));
-        close(gpio_fd_);
+        cleanup();
         return false;
     }
 
@@ -337,15 +368,19 @@ bool SpiManager::init_gpio() {
     ev.data.fd = gpio_fd_;
     if (epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, gpio_fd_, &ev) < 0) {
         LOGE("Failed to add GPIO to epoll: %s", strerror(errno));
-        close(gpio_fd_);
-        close(epoll_fd_);
+        cleanup();
         return false;
     }
 
-    // Clear the initial GPIO interrupt status
-    char dummy[8];
-    lseek(gpio_fd_, 0, SEEK_SET);
-    read(gpio_fd_, dummy, sizeof(dummy));
+    // Configure eventfd to monitor stop event
+    struct epoll_event ev_eventfd = {0};
+    ev_eventfd.events = EPOLLIN;
+    ev_eventfd.data.fd = event_fd_;
+    if (epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, event_fd_, &ev_eventfd) < 0) {
+        LOGE("Failed to add stop eventfd to epoll: %s", strerror(errno));
+        cleanup();
+        return false;
+    }
 
     // Start the GPIO monitoring thread
     gpio_thread_ = std::thread(&SpiManager::gpioMonitorThread, this);
@@ -365,11 +400,11 @@ uint8_t SpiManager::check_gpio_level_and_notify(uint8_t &last_level) {
     }
 
     uint8_t new_level = (value[0] - 0x30);
-    if (new_level != last_level) {
+    LOGI("GPIO has been triggered %u --> %d", last_level, new_level);
+    if (true/* new_level != last_level */) {
         last_level = new_level;
         if (new_level == 0) {
             tx_queue_.push_front(Packet{PacketSource::GPIO, GPIOData{new_level}});
-            LOGI("Push GPIO Packet, GPIO level=%u", new_level);
         }
     }
     return last_level;
@@ -380,38 +415,51 @@ void SpiManager::gpioMonitorThread() {
     uint8_t level = 1; // Record the last GPIO level state, default is high
 
     while (running_) {
-        int nfds = epoll_wait(epoll_fd_, events, 1, 100);
-        if (!running_) break;
+        // Clear the initial GPIO interrupt status
+        char dummy[8];
+        lseek(gpio_fd_, 0, SEEK_SET);
+        read(gpio_fd_, dummy, sizeof(dummy));
+
+        int nfds = epoll_wait(epoll_fd_, events, 1, -1);
 
         if (nfds < 0) {
             LOGE("epoll_wait failed: %s", strerror(errno));
             continue;
         }
 
-        if (nfds == 1 && (events[0].events & (EPOLLPRI | EPOLLERR))) {
-            LOGI("GPIO has been triggered");
-            // On the first check, trigger and send the event
-            check_gpio_level_and_notify(level);
-
-            // -------- Loop polling to check for level changes --------
-            const int max_poll_ms = 500;
-            for (int elapsed = 0; elapsed < max_poll_ms && running_; elapsed += 10) {
-                usleep(10 * 1000);
-                uint8_t now_level = check_gpio_level_and_notify(level);
-
-                // If it returns to High, the loop can terminate early
-                if (now_level == 1) {
-                    uint8_t count_read = tx_queue_.remove_all_of(PacketSource::READ);
-                    uint8_t count_gpio = tx_queue_.remove_all_of(PacketSource::GPIO);
-                    tx_queue_.clear_waiting_response();
-                    if (count_read || count_gpio) {
-                        LOGI("gpioMonitorThread, GPIO level change to 1, remove pending %u GPIO / %u READ packets",
-                            count_gpio, count_read);
-                    } else {
-                        LOGI("gpioMonitorThread, GPIO level change to 1");
-                    }
+        if (nfds == 1) {
+            if (events[0].data.fd == event_fd_) {
+                uint64_t val;
+                read(event_fd_, &val, sizeof(val));
+                LOGI("Eventfd has been triggered, val=%u", val);
+                if (!running_) {
                     break;
                 }
+            } else if (events[0].data.fd == gpio_fd_ && (events[0].events & (EPOLLPRI | EPOLLERR))) {
+                // On the first check, trigger and send the event
+                check_gpio_level_and_notify(level);
+#if 0
+                // -------- Loop polling to check for level changes --------
+                const int max_poll_ms = 500;
+                for (int elapsed = 0; elapsed < max_poll_ms && running_; elapsed += 10) {
+                    usleep(10 * 1000);
+                    uint8_t now_level = check_gpio_level_and_notify(level);
+    
+                    // If it returns to High, the loop can terminate early
+                    if (now_level == 1) {
+                        uint8_t count_read = tx_queue_.remove_all_of(PacketSource::READ);
+                        uint8_t count_gpio = tx_queue_.remove_all_of(PacketSource::GPIO);
+                        tx_queue_.clear_waiting_response();
+                        if (count_read || count_gpio) {
+                            LOGI("gpioMonitorThread, GPIO level change to 1, remove pending %u GPIO / %u READ packets",
+                                count_gpio, count_read);
+                        } else {
+                            LOGI("gpioMonitorThread, GPIO level change to 1");
+                        }
+                        break;
+                    }
+                }
+#endif
             }
         }
     }

@@ -1,6 +1,8 @@
 #pragma once
 #include <atomic>
 #include <thread>
+#include <sys/eventfd.h>
+
 #include "MessageQueue.h"
 #include "Packet.h"
 #include "SpiFrame.h"
@@ -39,11 +41,13 @@ private:
     std::thread gpio_thread_; // GPIO monitoring thread
     int epoll_fd_; // epoll file descriptor
     int gpio_fd_;  // GPIO file descriptor
+    int event_fd_; // stop event file descriptor
 
     int wait_gpio_interrupt();
     uint8_t check_gpio_level_and_notify(uint8_t &last_level);
     void gpioMonitorThread(); // GPIO monitoring thread function
     bool init_gpio();         // Initialize GPIO and epoll
+    void cleanup();
 
     std::optional<Packet> gen_ipc_packet(const SpiFrame& spi_frame);
     std::optional<SpiFrame> gen_spi_frame(const IPCData& ipc);

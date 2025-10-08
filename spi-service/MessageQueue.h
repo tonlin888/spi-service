@@ -6,30 +6,52 @@
 #include <condition_variable>
 #include <optional>
 
+#undef LOG_TAG
+#define LOG_TAG "spi-service/MessageQueue"
+
 template <typename T>
 class MessageQueue {
 public:
     // Push message to the back (normal priority)
     void push(const T& msg) {
-        {
-            // When pushing: If it's not a correct response, put it in pending_queue_.
-            // If a correct response is received, put it in the front of the queue and flush the previously stored data.
-            std::lock_guard<std::mutex> lock(mutex_);
-            if (is_ipc_msg(msg) && waiting_response_ != 0) {
-                if (get_seq(msg) != waiting_response_ || get_mcu_cmd(msg) != waiting_mcu_cmd_) {
-                    LOGI("push, got message(%u, %u) waiting(%u, %u)",
-                        get_seq(msg), get_mcu_cmd(msg), waiting_response_, waiting_mcu_cmd_);
-                    pending_queue_.push_back(msg);
-                    return;
-                }
-                queue_.push_front(msg);
-                flush_pending_locked();
-                cond_.notify_one();
-                return;
-            }
-            queue_.push_back(msg);
+        bool notify_needed = false;
+    
+        // Determine message type and sequence info outside the lock
+        bool is_ipc = is_ipc_msg(msg);
+        uint32_t seq = 0, cmd = 0;
+        if (is_ipc && waiting_response_ != 0) {
+            seq = get_seq(msg);
+            cmd = get_mcu_cmd(msg);
         }
-        cond_.notify_one();
+    
+        // Case 1: Waiting for a specific response, but this message is not it
+        if (is_ipc && waiting_response_ != 0 && (seq != waiting_response_ || cmd != waiting_mcu_cmd_)) {
+            LOGI("push, got message(seq=%u, cmd=%u) waiting(seq=%u, cmd=%u)",
+                seq, cmd, waiting_response_, waiting_mcu_cmd_);
+            {
+                // Only lock when modifying pending_queue_
+                std::lock_guard<std::mutex> lock(mutex_);
+                pending_queue_.push_back(msg);
+            }
+            return; // No need to notify, queue_ not changed
+        }
+    
+        // Case 2: Received the correct response or Case 3: general message
+        {
+            // Lock only the minimal critical section
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (is_ipc && waiting_response_ != 0) {
+                queue_.push_front(msg);      // Push correct response to front
+                clear_waiting_response();    // Clear waiting state
+            } else {
+                queue_.push_back(msg);       // Normal enqueue
+            }
+            notify_needed = true;           // Notify waiting thread after lock
+        }
+    
+        // Notify outside the lock to avoid waking up threads while holding mutex
+        if (notify_needed)
+            cond_.notify_one();
     }
 
     // Push message to the front (high priority)
@@ -108,17 +130,6 @@ public:
         waiting_mcu_cmd_ = mcu_cmd;
     }
 
-    void clear_waiting_response() {
-        if (waiting_response_ || waiting_mcu_cmd_) {
-            LOGI("clear_waiting_response, waiting_response_=%u waiting_mcu_cmd_=%u",
-                waiting_response_, waiting_mcu_cmd_);
-        }
-        std::lock_guard<std::mutex> lock(mutex_);
-        waiting_response_ = 0;
-        waiting_mcu_cmd_ = 0;
-        flush_pending_locked();
-    }
-
 private:
     bool is_ipc_msg(const T& msg) const {
         if constexpr (std::is_same_v<T, Packet>) {
@@ -144,6 +155,16 @@ private:
             }
         }
         return UINT16_MAX;
+    }
+
+    void clear_waiting_response() {
+        if (waiting_response_ || waiting_mcu_cmd_) {
+            LOGI("clear_waiting_response, waiting_response_=%u waiting_mcu_cmd_=%u",
+                waiting_response_, waiting_mcu_cmd_);
+        }
+        waiting_response_ = 0;
+        waiting_mcu_cmd_ = 0;
+        flush_pending_locked();
     }
 
     void flush_pending_locked() {

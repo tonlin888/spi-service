@@ -106,13 +106,13 @@ void socketReceiver(int sock) {
             SpiCommon::Message msg;
             SpiCommon::unpackMessage(buf, msg);
 
-            // MCU unreliable read
-            if (msg.msg_type == MsgType::NOTIFY && msg.data.size() == 1 && msg.data[0] == 0x01) {
-                std::cout << "MCU unreliable read" << std::endl;
+            // MCU communication internal test
+            if (msg.msg_type == MsgType::NOTIFY && msg.data.size() == 1 && (msg.data[0] == 0x01 || msg.data[0] == 0x03)) {
+                std::cout << "MCU read test" << std::endl;
                 std::vector<uint8_t> data = packMessage(msg.seq,
                     MsgType::SET_REQ,
                     ErrorCode::NONE,
-                    hexStringToBytes("01 00 D1 D2 D3"));
+                    ((msg.data[0] == 0x01) ? hexStringToBytes("01 00 C1 C2 C3") : hexStringToBytes("03 00 D1 D2 D3")));
                 if (write(sock, data.data(), data.size()) < 0) {
                     perror("write");
                 }
