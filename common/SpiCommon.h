@@ -104,7 +104,8 @@ struct Message {
     uint16_t seq;
     MsgType msg_type;
     ErrorCode err;
-    std::vector<uint8_t> data;
+    uint16_t len;
+    std::vector<uint8_t> data; // mcu code (2 bytes, littlen endian) + parameters(len - 2)
     uint16_t checksum;
 };
 
@@ -112,9 +113,21 @@ struct Message {
 enum class McuCommand : uint16_t {
     SUB_CMD_GET_LED_STATUS,
     SUB_CMD_SET_LED,
-    SUB_CMD_ID_READ = 0x0007,
-    SUB_CMD_ID_WRITE = 0x0008,
     // NOTE: Add other sub-command IDs here in the future
+    SUB_CMD_OTA_UPDATE_REQ, // Initiate OTA session
+    SUB_CMD_OTA_UPDATE_STATUS, // Get OTA status
+    SUB_CMD_OTA_DATA_CHUNK, // Send firmware chunk
+    SUB_CMD_OTA_COMPLETE,   // Finalize update
+    SUB_CMD_OTA_ABORT,      // Cancel update
+    SUB_CMD_GET_HAL_STATUS,
+    SUB_CMD_SET_HAL,
+    SUB_CMD_HAL_CHANGE, // notification # step 1, add MCU command enum
+
+    // Dev Info Commands
+    SUB_CMD_GET_IMEI = 0x0304, // get_imei # step 1, add MCU command enum, get_imei@dev_info_hal.h
+    SUB_CMD_GET_FW_INFO = 0x0308,
+    SUB_CMD_GET_FW_INFO_FROM_SOC = 0x030A, // get_fw_info # step 1, add MCU command enum, get_fw_info@dev_info_hal.h
+
     SUB_CMD_INVALID = UINT16_MAX,
 };
 
@@ -270,6 +283,13 @@ inline uint16_t calcChecksum(const uint8_t* buf, size_t len) {
     return static_cast<uint16_t>(sum & 0xFFFF);
 }
 
+inline uint16_t get_mcu_code(std::vector<uint8_t>& data) {
+    if (data.size() < 2) {
+        return static_cast<uint16_t>(McuCommand::SUB_CMD_INVALID);
+    }
+    return static_cast<uint16_t>(data[0]) | (static_cast<uint16_t>(data[1]) << 8);
+}
+
 // Pack message into binary buffer
 inline std::vector<uint8_t> packMessage(uint16_t seq,
                                         MsgType msg_type,
@@ -322,15 +342,15 @@ inline bool unpackMessage(const std::vector<uint8_t>& buf, Message& msg_out) {
     offset += 1;
 
     // LEN
-    uint16_t payload_len = buf[offset] | (buf[offset + 1] << 8);
+    msg_out.len = buf[offset] | (buf[offset + 1] << 8);
     offset += 2;
 
     // DATA
-    if (offset + payload_len > buf.size() - 2) {
+    if (offset + msg_out.len > buf.size() - 2) {
         return false; // payload length is incorrect
     }
-    msg_out.data.assign(buf.begin() + offset, buf.begin() + offset + payload_len);
-    offset += payload_len;
+    msg_out.data.assign(buf.begin() + offset, buf.begin() + offset + msg_out.len);
+    offset += msg_out.len;
 
     // CHECKSUM
     msg_out.checksum = buf[offset] | (buf[offset + 1] << 8);

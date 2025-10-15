@@ -14,3 +14,7 @@ Install:
 procd:
     adb shell "/etc/init.d/spi-service disable"; adb shell "/etc/init.d/spi-service stop"; adb shell 'pid=$(ps | grep spi-service | grep -v grep | cut -c1-5); kill -9 $pid'
     logread | grep spi-service
+
+log:
+    spi-service > /tmp/spi-service.log 2>&1
+    cmd-test 2>&1 | tee /tmp/cmd-test.log

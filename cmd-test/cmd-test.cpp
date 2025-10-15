@@ -23,6 +23,19 @@ using SpiCommon::msgToHexString;
 uint16_t global_seq{0};
 std::atomic<bool> running{true};
 
+// get_fw_info # step 2, include header or define structure, dev_info_hal.h
+typedef struct {
+    char version[64];  /* Semantic version: "1.2.3" or "v7.1.0-rc2" */
+    char variant[16];  /* Build variant: "release", "debug", "commercial" */
+    char build_id[64]; /* Unique build identifier with timestamp/commit */
+}fw_ver_info_t;
+
+typedef struct {
+    fw_ver_info_t nordic_fw;   /* Snap SDK, Zephyr and FIH components version */
+    fw_ver_info_t modem_fw;    /* cellular and wlan modem version */
+    fw_ver_info_t sailfish_fw; /* Combined FW version */
+} fw_info_t;
+
 // Return default command title based on command number
 std::string getMessageTitle(int cmd) {
     switch (cmd) {
@@ -36,6 +49,9 @@ std::string getMessageTitle(int cmd) {
         case 7: return "trigger MCU reliable read -> green LED twice";
         case 8: return "trigger MCU unreliable write -> blue LED twice";
         case 9: return "trigger MCU unreliable read -> white LED twice";
+        
+        case 10: return "register SUB_CMD_GET_IMEI";
+        case 11: return "call get_fw_info_handler()";
         default: return "Unknown Command";
     }
 }
@@ -92,7 +108,78 @@ std::vector<uint8_t> getMessage(int cmd) {
                     MsgType::SET_REQ,
                     ErrorCode::NONE,
                     hexStringToBytes("08 00 03")); // SUB_CMD_ID_WRITE (little endian)
+                    
+        // get_imei # step 2, Register SUB_CMD_GET_IMEI
+        // notification # step 2, Register SUB_CMD_HAL_CHANGE
+        // get_fw_info # step 3, Register SUB_CMD_GET_FW_INFO_FROM_SOC
+        case 10: return packMessage(global_seq,
+                    MsgType::REGISTER_REQ,
+                    ErrorCode::NONE,
+                    hexStringToBytes("09 00 04 03 08 03 0A 03"));
         default: return std::vector<uint8_t>{}; // default
+    }
+}
+
+// get_fw_info # step 4, create get_fw_info_handler
+// 將任意記憶體區塊轉為 hex string
+std::string to_hex_string(const void* data, size_t len) {
+    const unsigned char* bytes = reinterpret_cast<const unsigned char*>(data);
+    std::ostringstream oss;
+    oss << std::hex << std::setfill('0');
+    for (size_t i = 0; i < len; ++i) {
+        oss << std::setw(2) << static_cast<int>(bytes[i]);
+        if (i != len - 1) oss << " ";
+    }
+    return oss.str();
+}
+
+void get_fw_info_handler(int sock, SpiCommon::Message& msg) {
+    std::cout << "get_fw_info_handler()" << std::endl;
+
+    fw_info_t fw_info{};  // 全部自動初始化為 0
+
+    // 用安全拷貝填入字串
+    auto set_fw = [](fw_ver_info_t& fw, const char* ver, const char* var, const char* build) {
+        std::strncpy(fw.version, ver, sizeof(fw.version) - 1);
+        std::strncpy(fw.variant, var, sizeof(fw.variant) - 1);
+        std::strncpy(fw.build_id, build, sizeof(fw.build_id) - 1);
+    };
+
+    set_fw(fw_info.nordic_fw,   "1.0.1", "debug", "20251015094712");
+    set_fw(fw_info.modem_fw,    "1.0.2", "debug", "20251015094713");
+    set_fw(fw_info.sailfish_fw, "1.0.3", "debug", "20251015094714");
+
+    // mcu code: SUB_CMD_GET_FW_INFO_FROM_SOC
+    std::string data = SpiCommon::intToHexString(static_cast<uint16_t>(McuCommand::SUB_CMD_GET_FW_INFO_FROM_SOC));
+    // fill fw_info
+    data += to_hex_string(&fw_info, sizeof(fw_info));
+    
+    // Respond to the MCU's request using the same sequence ID from the NOTIFY
+    std::vector<uint8_t> raw_msg = packMessage(msg.seq,
+        MsgType::SET_REQ,
+        ErrorCode::NONE,
+        hexStringToBytes(data));
+    if (write(sock, raw_msg.data(), raw_msg.size()) < 0) {
+        perror("socke write error!");
+    }
+}
+
+// get_imei # step 3, create get_imei_handler
+void get_imei_handler(int sock, SpiCommon::Message& msg) {
+    std::cout << "get_imei_handler()" << std::endl;
+
+    // mcu code: SUB_CMD_GET_IMEI
+    std::string data = SpiCommon::intToHexString(static_cast<uint16_t>(McuCommand::SUB_CMD_GET_IMEI));
+    // imei 356938035643809
+    data += "33 35 36 39 33 38 30 33 35 36 34 33 38 30 39";
+
+    // Respond to the MCU's request using the same sequence ID from the NOTIFY
+    std::vector<uint8_t> raw_msg = packMessage(msg.seq,
+        MsgType::SET_REQ,
+        ErrorCode::NONE,
+        hexStringToBytes(data));
+    if (write(sock, raw_msg.data(), raw_msg.size()) < 0) {
+        perror("socke write error!");
     }
 }
 
@@ -116,6 +203,26 @@ void socketReceiver(int sock) {
                 if (write(sock, data.data(), data.size()) < 0) {
                     perror("write");
                 }
+            // get_imei # step 4, call get_imei_handler while SUB_CMD_GET_IMEI received
+            } else if (msg.msg_type == MsgType::NOTIFY
+                    && SpiCommon::get_mcu_code(msg.data) == static_cast<uint16_t>(McuCommand::SUB_CMD_GET_IMEI)) {
+                get_imei_handler(sock, msg);
+
+            // notification # step 3, print hall sensor status
+            } else if (msg.msg_type == MsgType::NOTIFY
+                    && SpiCommon::get_mcu_code(msg.data) == static_cast<uint16_t>(McuCommand::SUB_CMD_HAL_CHANGE)) {
+                if (msg.data.size() > 3) {
+                    std::cout << "SUB_CMD_HAL_CHANGE "
+                              << ((msg.data[3] == 0) ? "open" : "close")
+                              << std::endl;
+                } else {
+                    std::cout << "SUB_CMD_HAL_CHANGE invalid data length" << std::endl;
+                }
+            
+            // get_fw_info # step 5, call get_fw_info_handler while SUB_CMD_GET_FW_INFO_FROM_SOC received
+            } else if (msg.msg_type == MsgType::NOTIFY
+                    && SpiCommon::get_mcu_code(msg.data) == static_cast<uint16_t>(McuCommand::SUB_CMD_GET_FW_INFO_FROM_SOC)) {
+                get_fw_info_handler(sock, msg);
             }
             std::cout << "Command> ";
         } else if (n == 0) {
